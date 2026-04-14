@@ -1,5 +1,5 @@
-# FROM v1.1 - when threshold is crossed, will fit a new regression line
-# 6909
+# FROM v1.2 - implementing known anchor of 10 000 for Ashe
+# TBD
 import json
 from abc import abstractmethod
 from typing import Any
@@ -484,7 +484,7 @@ class IntarianMarketMaker(StatefulStrategy):
             self.fit_points = parsed_points[-self.fit_window :]
 
 
-class TomatoesAdaptiveMarketMaker(StatefulStrategy):
+class AshAdaptiveMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
         self.fair_value: float | None = None
@@ -493,6 +493,7 @@ class TomatoesAdaptiveMarketMaker(StatefulStrategy):
         self.microprice_alpha = 0.3
         self.ema_microprice: float | None = None
         self.ema_alpha = 0.6
+        self.mid_price_anchor: float = 10000.0
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:
@@ -647,7 +648,7 @@ class Trader:
 
         self.strategies: dict[Symbol, Strategy] = {
             "INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
-            #"ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
+            "ASH_COATED_OSMIUM": AshAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
