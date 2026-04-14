@@ -1,5 +1,6 @@
 # FROM v1.2 - removed some usage of trend_bias (take thresholds and fair price mean revert), also changes alpha_ema: 0.6 -> 0.1
-# 9244
+# MC: 46 421
+# 9 444
 import json
 from abc import abstractmethod
 from typing import Any

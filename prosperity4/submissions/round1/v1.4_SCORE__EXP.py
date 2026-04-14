@@ -1,5 +1,6 @@
-# FROM v1.3 - implements z_score on Ash
-# TBD
+# FROM v1.3 - implement z_score + EMA of current_mid as anchor
+# MC: 44 144
+# 9 247
 import json
 from abc import abstractmethod
 from typing import Any
@@ -489,12 +490,12 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         super().__init__(symbol, limit)
         self.fair_value: float | None = None
         self.residual_history: list[float] = []
-        self.ema_microprice: float | None = None
         self.ema_alpha = 0.1
         self.z_score_coeff = 1.0
         self.z_score_window = 8
         self.z_score_threshold = 0.5
         self.z_score = 0.0
+        self.ema_anchor: float | None = None
 
     def _compute_zscore(self, residual: float) -> None: # Use once !!
         z = 0.0
@@ -512,23 +513,30 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
 
         self.z_score =  max(-2.0, min(2.0, z))
 
-    def _estimate_fair_value(self, microprice: float) -> float:
-        if self.ema_microprice is None:
-            self.ema_microprice = microprice
-        else:
-            self.ema_microprice = (
-                self.ema_alpha * microprice
-                + (1 - self.ema_alpha) * self.ema_microprice
-            )
+    def _estimate_fair_value(self, current_mid: float) -> float:
+        prev_anchor = self.ema_anchor
 
-        residual = microprice - self.ema_microprice
+        self._update_ema_anchor(current_mid)
+
+        anchor = self.ema_anchor if prev_anchor is None else prev_anchor
+        residual = current_mid - anchor
+
 
         self._compute_zscore(residual)
 
         if abs(self.z_score) < self.z_score_threshold:
-            return self.ema_microprice
+            return self.ema_anchor
 
-        return self.ema_microprice - self.z_score_coeff * self.z_score
+        return self.ema_anchor - self.z_score_coeff * self.z_score
+
+    def _update_ema_anchor(self, current_mid: float) -> None:
+        if self.ema_anchor is None:
+            self.ema_anchor = current_mid
+        else:
+            self.ema_anchor = (
+                self.ema_alpha * current_mid
+                + (1 - self.ema_alpha) * self.ema_anchor
+            )
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
@@ -549,7 +557,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
             else current_mid
         )
 
-        self.fair_value = self._estimate_fair_value(microprice)
+        self.fair_value = self._estimate_fair_value(current_mid)
         fair_value = self.fair_value if self.fair_value is not None else current_mid
 
         # ============================================================
@@ -598,8 +606,9 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
     def save(self) -> JSON:
         return {
             "fair_value": self.fair_value,
-            "ema_microprice": self.ema_microprice,
-            "microprice_history": self.residual_history,
+            "ema_anchor": self.ema_anchor,
+            "residual_history": self.residual_history,
+            "z_score": self.z_score
         }
 
     def load(self, data: JSON) -> None:
@@ -610,19 +619,17 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         if isinstance(fair_value, (int, float)):
             self.fair_value = float(fair_value)
 
-        ema_microprice = data.get("ema_microprice")
-        if isinstance(ema_microprice, (int, float)):
-            self.ema_microprice = float(ema_microprice)
-        else:
-            # backward compatibility with older saved state
-            prev_microprice = data.get("prev_microprice")
-            if isinstance(prev_microprice, (int, float)):
-                self.ema_microprice = float(prev_microprice)
+        residual_history = data.get("residual_history")
+        if isinstance(residual_history, list):
+            self.residual_history = [float(x) for x in residual_history]
 
-        microprice_history = data.get("microprice_history")
-        if isinstance(microprice_history, list):
-            self.residual_history = [float(x) for x in microprice_history]
+        ema_anchor = data.get("ema_anchor")
+        if isinstance(ema_anchor, (int, float)):
+            self.ema_anchor = float(ema_anchor)
 
+        z_score = data.get("z_score")
+        if isinstance(z_score, (int, float)):
+            self.z_score = float(z_score)
 
 
 class Trader:
