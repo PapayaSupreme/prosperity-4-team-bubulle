@@ -1,5 +1,5 @@
-# INTARIAN_PEPPER_ROOT    239423.00
-# ASH_COATED_OSMIUM            0.00
+# v1.0 - port of emerald logic but for Intarian pepper, with midprice being 12 000 + 0.001 * timestep
+# 7 286
 import json
 from abc import abstractmethod
 from typing import Any
@@ -266,7 +266,7 @@ class StatefulStrategy(Strategy):
 class IntarianMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.fair_value: float = 10000.0
+        self.fair_value: float = 12000.0
         self.soft_pos = 40
         self.hard_pos = 70
 
@@ -363,7 +363,7 @@ class IntarianMarketMaker(StatefulStrategy):
                         position -= size
                     break
 
-        elif position < 0 and buy_left > 0:
+        elif position < 0 < buy_left:
             for ask_price, ask_volume in sell_orders:
                 if ask_price == fair_int:
                     size = min(-position, buy_left, -ask_volume)
