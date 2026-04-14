@@ -493,7 +493,6 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         self.microprice_alpha = 0.3
         self.ema_microprice: float | None = None
         self.ema_alpha = 0.6
-        self.mid_price_anchor: float = 10000.0
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:

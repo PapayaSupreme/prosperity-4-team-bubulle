@@ -1,5 +1,5 @@
-# FROM v1.2 - implementing known anchor of 10 000 for Ashe
-# TBD
+# FROM v1.2 - removed some usage of trend_bias (take thresholds and fair price mean revert)
+# 9247
 import json
 from abc import abstractmethod
 from typing import Any
@@ -493,7 +493,6 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         self.microprice_alpha = 0.3
         self.ema_microprice: float | None = None
         self.ema_alpha = 0.6
-        self.mid_price_anchor: float = 10000.0
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:
@@ -552,12 +551,12 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         # Take thresholds around current fair value, taking into account trend bias.
         take_buy_price = fair_value - 1 # THE HIGHER, THE EASIER. THIS IS THE PRICE I WANT TO BUY MY STOCK FOR
         take_sell_price = fair_value + 1 # THE LOWER, THE EASIER. THIS IS THE PRICE I WANT TO SELL MY STOCK FOR
-        if trend_bias > 0: # market is up, expect a reversion, harder to buy, bid price--
+        """if trend_bias > 0: # market is up, expect a reversion, harder to buy, bid price--
             take_buy_price -= 1
             take_sell_price -= 1
         elif trend_bias < 0: # market is down, expect a reversion, harder to sell, ask price++
             take_buy_price += 1
-            take_sell_price += 1
+            take_sell_price += 1"""
 
         buy_left, position = self._take_sell_levels(sell_orders, buy_left, position, take_buy_price)
         sell_left, position = self._take_buy_levels(buy_orders, sell_left, position, take_sell_price)
@@ -576,7 +575,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         # 2) PASSIVE QUOTING
         # ============================================================
 
-        fair_int = int(fair_value - trend_bias)
+        fair_int = int(fair_value)
         bid_quote = min(best_bid + 1, fair_int - 1)
         ask_quote = max(best_ask - 1, fair_int + 1)
 
