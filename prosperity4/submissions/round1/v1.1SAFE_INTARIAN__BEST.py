@@ -1,5 +1,5 @@
-# FROM v1.0 - port of tomato logic but for Ash coated osmium, with midprice being around 10 000
-# TBD
+# FROM v1.0 - when threshold is crossed, will fit a new regression line
+# 6909
 import json
 from abc import abstractmethod
 from typing import Any
@@ -269,22 +269,83 @@ class IntarianMarketMaker(StatefulStrategy):
         self.fair_value: float = 12000.0
         self.soft_pos = 40
         self.hard_pos = 70
+        self.error_threshold = 10.0
+        self.error_streak = 0
+        self.required_error_streak = 5
+        self.use_fitted_fair_value = False
+        self.fit_window = 60
+        self.fit_points: list[list[float]] = []
 
     def _update_fair_value(self) -> None:
         self.fair_value += 100
+
+    def _record_mid_price(self, timestamp: int, mid_price: float) -> None:
+        self.fit_points.append([float(timestamp), mid_price])
+        if len(self.fit_points) > self.fit_window:
+            self.fit_points.pop(0)
+
+    def _fit_line(self) -> tuple[float, float] | None:
+        if len(self.fit_points) < 6:
+            return None
+
+        n = len(self.fit_points)
+        sum_x = sum(point[0] for point in self.fit_points)
+        sum_y = sum(point[1] for point in self.fit_points)
+        mean_x = sum_x / n
+        mean_y = sum_y / n
+
+        ss_xx = 0.0
+        ss_xy = 0.0
+        for x_value, y_value in self.fit_points:
+            dx = x_value - mean_x
+            ss_xx += dx * dx
+            ss_xy += dx * (y_value - mean_y)
+
+        if ss_xx == 0:
+            return None
+
+        slope = ss_xy / ss_xx
+        intercept = mean_y - slope * mean_x
+        return slope, intercept
+
+    def _predict_fitted_fair_value(self, timestamp: int) -> float | None:
+        fitted = self._fit_line()
+        if fitted is None:
+            return None
+        slope, intercept = fitted
+        return slope * float(timestamp) + intercept
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
         position, buy_left, sell_left = self._get_position_capacities(state)
 
-        # Update non-resetting fair value
-        self._update_fair_value()
+        best_bid = buy_orders[0][0]
+        best_ask = sell_orders[0][0]
+        current_mid = (best_bid + best_ask) / 2
 
-        fair_int = int(self.fair_value)
+        self._record_mid_price(state.timestamp, current_mid)
+
+        if self.use_fitted_fair_value:
+            fitted_fair_value = self._predict_fitted_fair_value(state.timestamp)
+            if fitted_fair_value is not None:
+                self.fair_value = fitted_fair_value
+        else:
+            # Keep original non-resetting fair value formula until it fails repeatedly.
+            self._update_fair_value()
+            if abs(self.fair_value - current_mid) > self.error_threshold:
+                self.error_streak += 1
+            else:
+                self.error_streak = 0
+
+            if self.error_streak >= self.required_error_streak:
+                self.use_fitted_fair_value = True
+                fitted_fair_value = self._predict_fitted_fair_value(state.timestamp)
+                if fitted_fair_value is not None:
+                    self.fair_value = fitted_fair_value
 
         # Hard thresholds around fair
-        take_buy_price = fair_int - 1
-        take_sell_price = fair_int + 1
+        take_buy_price = self.fair_value - 1
+        take_sell_price = self.fair_value + 1
 
         # ============================================================
         # 1) TAKE OBVIOUS MISPRICINGS AROUND KNOWN FAIR
@@ -311,8 +372,8 @@ class IntarianMarketMaker(StatefulStrategy):
         # 2) PASSIVE QUOTING
         # ============================================================
 
-        bid_quote = min(best_bid + 1, fair_int - 1)
-        ask_quote = max(best_ask - 1, fair_int + 1)
+        bid_quote = min(best_bid + 1, self.fair_value - 1)
+        ask_quote = max(best_ask - 1, self.fair_value + 1)
 
         # Never cross
         bid_quote = min(bid_quote, best_ask - 1)
@@ -328,12 +389,12 @@ class IntarianMarketMaker(StatefulStrategy):
 
             if position > 0:
                 # long -> bid less aggressively, ask more aggressively
-                bid_quote = min(best_bid, fair_int - 1)
-                ask_quote = max(best_bid + 1, fair_int + 1)
+                bid_quote = min(best_bid, self.fair_value - 1)
+                ask_quote = max(best_bid + 1, self.fair_value + 1)
             elif position < 0:
                 # short -> bid more aggressively, ask less aggressively
-                bid_quote = min(best_ask - 1, fair_int - 1)
-                ask_quote = max(best_ask, fair_int + 1)
+                bid_quote = min(best_ask - 1, self.fair_value - 1)
+                ask_quote = max(best_ask, self.fair_value + 1)
 
         else:
             bid_size = min(buy_left, 12)
@@ -341,12 +402,12 @@ class IntarianMarketMaker(StatefulStrategy):
 
             if position > 0:
                 bid_size = 0
-                ask_quote = max(best_bid + 1, fair_int)
+                ask_quote = max(best_bid + 1, self.fair_value)
                 ask_size = min(sell_left, 40)
 
             elif position < 0:
                 ask_size = 0
-                bid_quote = min(best_ask - 1, fair_int)
+                bid_quote = min(best_ask - 1, self.fair_value)
                 bid_size = min(buy_left, 40)
 
         # ============================================================
@@ -355,7 +416,7 @@ class IntarianMarketMaker(StatefulStrategy):
 
         if position > 0 and sell_left > 0:
             for bid_price, bid_volume in buy_orders:
-                if bid_price == fair_int:
+                if bid_price == self.fair_value:
                     size = min(position, sell_left, bid_volume)
                     if size > 0:
                         self.sell(bid_price, size)
@@ -365,7 +426,7 @@ class IntarianMarketMaker(StatefulStrategy):
 
         elif position < 0 < buy_left:
             for ask_price, ask_volume in sell_orders:
-                if ask_price == fair_int:
+                if ask_price == self.fair_value:
                     size = min(-position, buy_left, -ask_volume)
                     if size > 0:
                         self.buy(ask_price, size)
@@ -382,12 +443,15 @@ class IntarianMarketMaker(StatefulStrategy):
         # ============================================================
 
         self._post_passive_orders(
-            buy_left, sell_left, bid_quote, ask_quote, bid_size, ask_size
+            buy_left, sell_left, round(bid_quote), round(ask_quote), bid_size, ask_size
         )
 
     def save(self) -> JSON:
         return {
             "fair_value": self.fair_value,
+            "error_streak": self.error_streak,
+            "use_fitted_fair_value": self.use_fitted_fair_value,
+            "fit_points": self.fit_points,
         }
 
     def load(self, data: JSON) -> None:
@@ -397,6 +461,27 @@ class IntarianMarketMaker(StatefulStrategy):
         fair_value = data.get("fair_value")
         if isinstance(fair_value, (int, float)):
             self.fair_value = float(fair_value)
+
+        error_streak = data.get("error_streak")
+        if isinstance(error_streak, int):
+            self.error_streak = error_streak
+
+        use_fitted_fair_value = data.get("use_fitted_fair_value")
+        if isinstance(use_fitted_fair_value, bool):
+            self.use_fitted_fair_value = use_fitted_fair_value
+
+        fit_points = data.get("fit_points")
+        if isinstance(fit_points, list):
+            parsed_points: list[list[float]] = []
+            for point in fit_points:
+                if (
+                    isinstance(point, list)
+                    and len(point) == 2
+                    and isinstance(point[0], (int, float))
+                    and isinstance(point[1], (int, float))
+                ):
+                    parsed_points.append([float(point[0]), float(point[1])])
+            self.fit_points = parsed_points[-self.fit_window :]
 
 
 class TomatoesAdaptiveMarketMaker(StatefulStrategy):
@@ -562,7 +647,7 @@ class Trader:
 
         self.strategies: dict[Symbol, Strategy] = {
             "INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
-            "ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
+            #"ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:

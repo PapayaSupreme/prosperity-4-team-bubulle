@@ -1,5 +1,5 @@
-# FROM v1.0 - when threshold is crossed, will fit a new regression line
-# 6899
+# FROM v1.1 - when threshold is crossed, will fit a new regression line
+# 6909
 import json
 from abc import abstractmethod
 from typing import Any
