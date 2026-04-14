@@ -488,28 +488,29 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
         self.fair_value: float | None = None
-        self.microprice_history: list[float] = []
+        self.residual_history: list[float] = []
         self.ema_microprice: float | None = None
-        self.ema_alpha = 0.6
-        self.k = 1
+        self.ema_alpha = 0.1
         self.z_score_coeff = 1.0
         self.z_score_window = 8
+        self.z_score_threshold = 0.5
+        self.z_score = 0.0
 
-    def _compute_zscore(self, residual: float) -> float:
+    def _compute_zscore(self, residual: float) -> None: # Use once !!
         z = 0.0
-        if len(self.microprice_history) >= 4:
-            mean_ = sum(self.microprice_history) / len(self.microprice_history)
-            variance = sum((x - mean_) ** 2 for x in self.microprice_history) / len(self.microprice_history)
+        if len(self.residual_history) >= 4:
+            mean_ = sum(self.residual_history) / len(self.residual_history)
+            variance = sum((x - mean_) ** 2 for x in self.residual_history) / len(self.residual_history)
             std = variance ** 0.5
 
             if std >= 1e-6:
                 z = (residual - mean_) / std
 
-        self.microprice_history.append(residual)
-        if len(self.microprice_history) > self.z_score_window:
-            self.microprice_history.pop(0)
+        self.residual_history.append(residual)
+        if len(self.residual_history) > self.z_score_window:
+            self.residual_history.pop(0)
 
-        return max(-2.0, min(2.0, z))
+        self.z_score =  max(-2.0, min(2.0, z))
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:
@@ -520,17 +521,14 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
                 + (1 - self.ema_alpha) * self.ema_microprice
             )
 
-        # 2) Compute residual
         residual = microprice - self.ema_microprice
 
-        # 3) Z-score on residual
-        zscore = self._compute_zscore(residual)
+        self._compute_zscore(residual)
 
-        if abs(zscore) < 0.5:
-            zscore = 0.0
+        if abs(self.z_score) < self.z_score_threshold:
+            return self.ema_microprice
 
-        # 4) Final fair value
-        return self.ema_microprice - self.z_score_coeff * zscore
+        return self.ema_microprice - self.z_score_coeff * self.z_score
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
@@ -558,9 +556,10 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         # 1) TAKE OBVIOUS MISPRICINGS AROUND ESTIMATED FAIR VALUE
         # ============================================================
 
-        # Take thresholds around current fair value, taking into account trend bias.
+        # Take thresholds around current fair value, taking into account z_score.
         take_buy_price = fair_value - 1  # THE HIGHER, THE EASIER. THIS IS THE PRICE I WANT TO BUY MY STOCK FOR
         take_sell_price = fair_value + 1  # THE LOWER, THE EASIER. THIS IS THE PRICE I WANT TO SELL MY STOCK FOR
+
 
         buy_left, position = self._take_sell_levels(sell_orders, buy_left, position, take_buy_price)
         sell_left, position = self._take_buy_levels(buy_orders, sell_left, position, take_sell_price)
@@ -600,7 +599,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         return {
             "fair_value": self.fair_value,
             "ema_microprice": self.ema_microprice,
-            "microprice_history": self.microprice_history,
+            "microprice_history": self.residual_history,
         }
 
     def load(self, data: JSON) -> None:
@@ -622,7 +621,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
 
         microprice_history = data.get("microprice_history")
         if isinstance(microprice_history, list):
-            self.microprice_history = [float(x) for x in microprice_history]
+            self.residual_history = [float(x) for x in microprice_history]
 
 
 
