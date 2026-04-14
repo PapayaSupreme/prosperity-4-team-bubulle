@@ -1,14 +1,5 @@
-# 2543 - from v 1.22(?): trend now influence quotes by its value and not a flat 1
-# 100MC: 2026-04-13_18-06-47 - PnL: 15 354, STD: 2184, Median: 15 308
-# 1MC: PnL: 30 830, Sharpe: 57, Calmar: 30
-"""SET             DAY    TICKS  OWN_TRADES    FINAL_PNL  RUN_DIR
-D-2              -2    10000         671     15562.50  runs/backtest-1776159856769-tutorial-day-2
-D-1              -1    10000         724     15567.00  runs/backtest-1776159856769-tutorial-day-1
-SUB              -1     2000         121      2541.50  runs/backtest-1776159856769-tutorial-submission-day-1
-
-PRODUCT        D-2        D-1        SUB
-TOM        8380.50    7804.00    1491.50
-EMR        7182.00    7763.00    1050.00"""
+# FROM v1.0 - when threshold is crossed, will fit a new regression line
+# TBD
 import json
 from abc import abstractmethod
 from typing import Any
@@ -272,31 +263,41 @@ class StatefulStrategy(Strategy):
         raise NotImplementedError()
 
 
-class EmeraldsMarketMaker(Strategy):
+class IntarianMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.fair_value = 10_000
-
-        # Hard thresholds for a product with fixed fair value.
-        self.take_buy_price = 9_998   # buy anything cheaper than fair
-        self.take_sell_price = 10_002 # sell anything richer than fair
-
-        # Inventory bands.
+        self.fair_value: float = 12000.0
         self.soft_pos = 40
         self.hard_pos = 70
+
+    def _update_fair_value(self) -> None:
+        self.fair_value += 100
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
         position, buy_left, sell_left = self._get_position_capacities(state)
 
+        # Update non-resetting fair value
+        self._update_fair_value()
+
+        fair_int = int(self.fair_value)
+
+        # Hard thresholds around fair
+        take_buy_price = fair_int - 1
+        take_sell_price = fair_int + 1
+
         # ============================================================
-        # 1) TAKE OBVIOUS MISPRICINGS AROUND KNOWN FAIR = 10000
+        # 1) TAKE OBVIOUS MISPRICINGS AROUND KNOWN FAIR
         # ============================================================
 
-        buy_left, position = self._take_sell_levels(sell_orders, buy_left, position, self.take_buy_price)
-        sell_left, position = self._take_buy_levels(buy_orders, sell_left, position, self.take_sell_price)
+        buy_left, position = self._take_sell_levels(
+            sell_orders, buy_left, position, take_buy_price
+        )
+        sell_left, position = self._take_buy_levels(
+            buy_orders, sell_left, position, take_sell_price
+        )
 
-        # Recompute remaining capacity after aggressive fills.
+        # Recompute remaining capacity after aggressive fills
         buy_left = self.limit - position
         sell_left = self.limit + position
 
@@ -307,20 +308,16 @@ class EmeraldsMarketMaker(Strategy):
         best_ask = sell_orders[0][0]
 
         # ============================================================
-        # 2) PASSIVE QUOTING: SIMPLE, DISCRETE, INVENTORY-AWARE
+        # 2) PASSIVE QUOTING
         # ============================================================
 
-        # Default idea:
-        # - improve best bid by 1 tick if still below fair
-        # - improve best ask by 1 tick if still above fair
-        bid_quote = min(best_bid + 1, self.fair_value - 1)
-        ask_quote = max(best_ask - 1, self.fair_value + 1)
+        bid_quote = min(best_bid + 1, fair_int - 1)
+        ask_quote = max(best_ask - 1, fair_int + 1)
 
-        # Safety: never cross.
+        # Never cross
         bid_quote = min(bid_quote, best_ask - 1)
         ask_quote = max(ask_quote, best_bid + 1)
 
-        # Inventory-dependent quote size and aggressiveness.
         if abs(position) < self.soft_pos:
             bid_size = min(buy_left, 32)
             ask_size = min(sell_left, 32)
@@ -329,41 +326,36 @@ class EmeraldsMarketMaker(Strategy):
             bid_size = min(buy_left, 20)
             ask_size = min(sell_left, 20)
 
-            # Lean away from current inventory.
             if position > 0:
-                # long -> less aggressive on bid, more aggressive on ask
-                bid_quote = min(best_bid, self.fair_value - 1)
-                ask_quote = max(best_bid + 1, self.fair_value + 1)
+                # long -> bid less aggressively, ask more aggressively
+                bid_quote = min(best_bid, fair_int - 1)
+                ask_quote = max(best_bid + 1, fair_int + 1)
             elif position < 0:
-                # short -> more aggressive on bid, less aggressive on ask
-                bid_quote = min(best_ask - 1, self.fair_value - 1)
-                ask_quote = max(best_ask, self.fair_value + 1)
+                # short -> bid more aggressively, ask less aggressively
+                bid_quote = min(best_ask - 1, fair_int - 1)
+                ask_quote = max(best_ask, fair_int + 1)
 
         else:
-            # Very stretched inventory: strongly prioritize flattening.
             bid_size = min(buy_left, 12)
             ask_size = min(sell_left, 12)
 
             if position > 0:
-                # very long -> stop competing on bid, sell more aggressively
                 bid_size = 0
-                ask_quote = max(best_bid + 1, self.fair_value)
+                ask_quote = max(best_bid + 1, fair_int)
                 ask_size = min(sell_left, 40)
 
             elif position < 0:
-                # very short -> stop competing on ask, buy more aggressively
                 ask_size = 0
-                bid_quote = min(best_ask - 1, self.fair_value)
+                bid_quote = min(best_ask - 1, fair_int)
                 bid_size = min(buy_left, 40)
 
         # ============================================================
-        # 3) OPTIONAL INVENTORY FLATTENING AT FAIR WHEN BOOK TOUCHES IT
+        # 3) OPTIONAL INVENTORY FLATTENING AT FAIR
         # ============================================================
 
-        # If fair is directly tradable and we are imbalanced, use it.
         if position > 0 and sell_left > 0:
             for bid_price, bid_volume in buy_orders:
-                if bid_price == self.fair_value:
+                if bid_price == fair_int:
                     size = min(position, sell_left, bid_volume)
                     if size > 0:
                         self.sell(bid_price, size)
@@ -373,7 +365,7 @@ class EmeraldsMarketMaker(Strategy):
 
         elif position < 0 < buy_left:
             for ask_price, ask_volume in sell_orders:
-                if ask_price == self.fair_value:
+                if ask_price == fair_int:
                     size = min(-position, buy_left, -ask_volume)
                     if size > 0:
                         self.buy(ask_price, size)
@@ -381,14 +373,30 @@ class EmeraldsMarketMaker(Strategy):
                         position += size
                     break
 
-        # Recompute after any flattening.
+        # Recompute after flattening
         buy_left = self.limit - position
         sell_left = self.limit + position
 
         # ============================================================
         # 4) POST PASSIVE ORDERS
         # ============================================================
-        self._post_passive_orders(buy_left, sell_left, bid_quote, ask_quote, bid_size, ask_size)
+
+        self._post_passive_orders(
+            buy_left, sell_left, bid_quote, ask_quote, bid_size, ask_size
+        )
+
+    def save(self) -> JSON:
+        return {
+            "fair_value": self.fair_value,
+        }
+
+    def load(self, data: JSON) -> None:
+        if not isinstance(data, dict):
+            return
+
+        fair_value = data.get("fair_value")
+        if isinstance(fair_value, (int, float)):
+            self.fair_value = float(fair_value)
 
 
 class TomatoesAdaptiveMarketMaker(StatefulStrategy):
@@ -459,11 +467,11 @@ class TomatoesAdaptiveMarketMaker(StatefulStrategy):
         take_buy_price = fair_value - 1 # THE HIGHER, THE EASIER. THIS IS THE PRICE I WANT TO BUY MY STOCK FOR
         take_sell_price = fair_value + 1 # THE LOWER, THE EASIER. THIS IS THE PRICE I WANT TO SELL MY STOCK FOR
         if trend_bias > 0: # market is up, expect a reversion, harder to buy, bid price--
-            take_buy_price -= max(1, round(trend_bias))
-            take_sell_price -= max(1, round(trend_bias))
+            take_buy_price -= 1
+            take_sell_price -= 1
         elif trend_bias < 0: # market is down, expect a reversion, harder to sell, ask price++
-            take_buy_price += max(1, round(trend_bias))
-            take_sell_price += max(1, round(trend_bias))
+            take_buy_price += 1
+            take_sell_price += 1
 
         buy_left, position = self._take_sell_levels(sell_orders, buy_left, position, take_buy_price)
         sell_left, position = self._take_buy_levels(buy_orders, sell_left, position, take_sell_price)
@@ -548,13 +556,13 @@ class Trader:
 
     def __init__(self) -> None:
         limits = {
-            "EMERALDS": 80,
-            "TOMATOES": 80,
+            "INTARIAN_PEPPER_ROOT": 80,
+            "ASH_COATED_OSMIUM": 80,
         }
 
         self.strategies: dict[Symbol, Strategy] = {
-            "EMERALDS": EmeraldsMarketMaker("EMERALDS", limits["EMERALDS"]),
-            "TOMATOES": TomatoesAdaptiveMarketMaker("TOMATOES", limits["TOMATOES"]),
+            "INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
+            #"ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:

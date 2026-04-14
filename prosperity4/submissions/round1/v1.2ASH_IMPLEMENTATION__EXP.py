@@ -1,5 +1,5 @@
-# v1.0 - port of emerald logic but for Intarian pepper, with midprice being 12 000 + 0.001 * timestep
-# 7 286
+# FROM v1.0 - port of tomato logic but for Ash coated osmium, with midprice being around 10 000
+# TBD
 import json
 from abc import abstractmethod
 from typing import Any
@@ -562,7 +562,7 @@ class Trader:
 
         self.strategies: dict[Symbol, Strategy] = {
             "INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
-            #"ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
+            "ASH_COATED_OSMIUM": TomatoesAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
