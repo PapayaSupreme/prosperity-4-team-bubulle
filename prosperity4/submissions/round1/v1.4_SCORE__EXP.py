@@ -488,11 +488,28 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
         self.fair_value: float | None = None
-        self.prev_microprice: float | None = None
-        self.prev_mid_prices = []
-        self.microprice_alpha = 0.3
+        self.microprice_history: list[float] = []
         self.ema_microprice: float | None = None
         self.ema_alpha = 0.6
+        self.k = 1
+        self.z_score_coeff = 1.0
+        self.z_score_window = 8
+
+    def _compute_zscore(self, residual: float) -> float:
+        z = 0.0
+        if len(self.microprice_history) >= 4:
+            mean_ = sum(self.microprice_history) / len(self.microprice_history)
+            variance = sum((x - mean_) ** 2 for x in self.microprice_history) / len(self.microprice_history)
+            std = variance ** 0.5
+
+            if std >= 1e-6:
+                z = (residual - mean_) / std
+
+        self.microprice_history.append(residual)
+        if len(self.microprice_history) > self.z_score_window:
+            self.microprice_history.pop(0)
+
+        return max(-2.0, min(2.0, z))
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:
@@ -502,8 +519,18 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
                 self.ema_alpha * microprice
                 + (1 - self.ema_alpha) * self.ema_microprice
             )
-        # Mean-revert short-term ema microprice moves instead of raw mid moves.
-        return self.ema_microprice
+
+        # 2) Compute residual
+        residual = microprice - self.ema_microprice
+
+        # 3) Z-score on residual
+        zscore = self._compute_zscore(residual)
+
+        if abs(zscore) < 0.5:
+            zscore = 0.0
+
+        # 4) Final fair value
+        return self.ema_microprice - self.z_score_coeff * zscore
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
@@ -513,22 +540,6 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         best_bid = buy_orders[0][0]
         best_ask = sell_orders[0][0]
         current_mid = (best_bid + best_ask) / 2
-
-        self.prev_mid_prices.append(current_mid)
-        if len(self.prev_mid_prices) > 10:
-            self.prev_mid_prices.pop(0)
-
-        # Simple trend: last 4 mids increasing or decreasing
-        trend_bias = 0
-        if len(self.prev_mid_prices) >= 4:
-            last_4 = self.prev_mid_prices[-4:]
-            diffs = [last_4[i + 1] - last_4[i] for i in range(3)]
-
-            pos_count = sum(d > 0 for d in diffs)
-            neg_count = sum(d < 0 for d in diffs)
-
-            if pos_count >= 2 or neg_count >= 2:
-                trend_bias = sum(diffs) / 3
 
         # Microprice weights prices by opposite-side top-of-book volume.
         best_bid_vol = max(0, buy_orders[0][1])
@@ -541,7 +552,6 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         )
 
         self.fair_value = self._estimate_fair_value(microprice)
-
         fair_value = self.fair_value if self.fair_value is not None else current_mid
 
         # ============================================================
@@ -549,14 +559,8 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         # ============================================================
 
         # Take thresholds around current fair value, taking into account trend bias.
-        take_buy_price = fair_value - 1 # THE HIGHER, THE EASIER. THIS IS THE PRICE I WANT TO BUY MY STOCK FOR
-        take_sell_price = fair_value + 1 # THE LOWER, THE EASIER. THIS IS THE PRICE I WANT TO SELL MY STOCK FOR
-        """if trend_bias > 0: # market is up, expect a reversion, harder to buy, bid price--
-            take_buy_price -= 1
-            take_sell_price -= 1
-        elif trend_bias < 0: # market is down, expect a reversion, harder to sell, ask price++
-            take_buy_price += 1
-            take_sell_price += 1"""
+        take_buy_price = fair_value - 1  # THE HIGHER, THE EASIER. THIS IS THE PRICE I WANT TO BUY MY STOCK FOR
+        take_sell_price = fair_value + 1  # THE LOWER, THE EASIER. THIS IS THE PRICE I WANT TO SELL MY STOCK FOR
 
         buy_left, position = self._take_sell_levels(sell_orders, buy_left, position, take_buy_price)
         sell_left, position = self._take_buy_levels(buy_orders, sell_left, position, take_sell_price)
@@ -575,7 +579,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         # 2) PASSIVE QUOTING
         # ============================================================
 
-        fair_int = int(fair_value)
+        fair_int = int(round(fair_value))
         bid_quote = min(best_bid + 1, fair_int - 1)
         ask_quote = max(best_ask - 1, fair_int + 1)
 
@@ -583,19 +587,8 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         bid_quote = min(bid_quote, best_ask - 1)
         ask_quote = max(ask_quote, best_bid + 1)
 
-        # Base quote size
-        base_bid_size = buy_left
-        base_ask_size = sell_left
-
-        if trend_bias > 0:
-            bid_size = max(base_bid_size // 2, 6)  # buy less
-            ask_size = base_ask_size  # sell more
-        elif trend_bias < 0:
-            bid_size = base_bid_size  # buy more
-            ask_size = max(base_ask_size // 2, 6)  # sell less
-        else:
-            bid_size = base_bid_size
-            ask_size = base_ask_size
+        bid_size = buy_left
+        ask_size = sell_left
 
         # ============================================================
         # 3) POST PASSIVE ORDERS
@@ -607,7 +600,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         return {
             "fair_value": self.fair_value,
             "ema_microprice": self.ema_microprice,
-            "prev_mid_prices": self.prev_mid_prices,
+            "microprice_history": self.microprice_history,
         }
 
     def load(self, data: JSON) -> None:
@@ -627,9 +620,9 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
             if isinstance(prev_microprice, (int, float)):
                 self.ema_microprice = float(prev_microprice)
 
-        mid_history = data.get("prev_mid_prices")
-        if isinstance(mid_history, list):
-            self.prev_mid_prices = [float(x) for x in mid_history]
+        microprice_history = data.get("microprice_history")
+        if isinstance(microprice_history, list):
+            self.microprice_history = [float(x) for x in microprice_history]
 
 
 

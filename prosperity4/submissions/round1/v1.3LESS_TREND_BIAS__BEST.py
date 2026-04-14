@@ -1,5 +1,5 @@
-# FROM v1.2 - removed some usage of trend_bias (take thresholds and fair price mean revert)
-# 9247
+# FROM v1.2 - removed some usage of trend_bias (take thresholds and fair price mean revert), also changes alpha_ema: 0.6 -> 0.1
+# 9244
 import json
 from abc import abstractmethod
 from typing import Any
@@ -492,7 +492,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         self.prev_mid_prices = []
         self.microprice_alpha = 0.3
         self.ema_microprice: float | None = None
-        self.ema_alpha = 0.6
+        self.ema_alpha = 0.1
 
     def _estimate_fair_value(self, microprice: float) -> float:
         if self.ema_microprice is None:
