@@ -1,6 +1,6 @@
-# FROM v1.3 - implement z_score + EMA of current_mid as anchor
-# MC: 44 144
-# 9 247
+# FROM v1.3 - implement z_score + EMA of current_mid as anchor + z_score-related passive bid & ask size adjustments
+# MC: 50 514
+# 9 579
 import json
 from abc import abstractmethod
 from typing import Any
@@ -594,8 +594,33 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         bid_quote = min(bid_quote, best_ask - 1)
         ask_quote = max(ask_quote, best_bid + 1)
 
-        bid_size = buy_left
-        ask_size = sell_left
+        base_bid_size = buy_left
+        base_ask_size = sell_left
+
+        if self.z_score > 1.0:
+            # Rich vs anchor -> lean short
+            bid_size = max(base_bid_size // 3, 4)
+            ask_size = base_ask_size
+
+        elif self.z_score > 0.5:
+            # Mildly rich
+            bid_size = max(base_bid_size // 2, 6)
+            ask_size = base_ask_size
+
+        elif self.z_score < -1.0:
+            # Cheap vs anchor -> lean long
+            bid_size = base_bid_size
+            ask_size = max(base_ask_size // 3, 4)
+
+        elif self.z_score < -0.5:
+            # Mildly cheap
+            bid_size = base_bid_size
+            ask_size = max(base_ask_size // 2, 6)
+
+        else:
+            # Near anchor
+            bid_size = base_bid_size
+            ask_size = base_ask_size
 
         # ============================================================
         # 3) POST PASSIVE ORDERS
