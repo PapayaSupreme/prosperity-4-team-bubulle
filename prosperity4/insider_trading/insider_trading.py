@@ -31,8 +31,8 @@ def load_tutorial_days(data_dir: Path, days: list[int]) -> tuple[pd.DataFrame, p
     trade_frames: list[pd.DataFrame] = []
 
     for day in days:
-        prices_path = data_dir / f"prices_round_0_day_{day}.csv"
-        trades_path = data_dir / f"trades_round_0_day_{day}.csv"
+        prices_path = data_dir / f"prices_round_1_day_{day}.csv"
+        trades_path = data_dir / f"trades_round_1_day_{day}.csv"
 
         prices_df, trades_df = load_data(prices_path, trades_path)
         prices_df["day"] = day
@@ -261,7 +261,7 @@ def participant_summary(df: pd.DataFrame, horizon: int = 3, min_trades: int = 3)
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[1] / "data" / "tutorial_round"
+    base_dir = Path(__file__).resolve().parents[2] / "data" / "ROUND_1"
     days = [-2, -1]
     horizons = (1, 3, 5)
     ranking_horizon = 3

@@ -1,6 +1,6 @@
 # FROM v1.3 - implement z_score + EMA of current_mid as anchor + z_score-related passive bid & ask size adjustments
-# MC: 50 514
-# 9 579
+# MC(z_score_window): 50 514 -> 12: 50 635 -> 16: 50 646 -> 20: 50 495
+# 9 585 for z_score_window = 12 OR 16
 import json
 from abc import abstractmethod
 from typing import Any
@@ -492,7 +492,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         self.residual_history: list[float] = []
         self.ema_alpha = 0.1
         self.z_score_coeff = 1.0
-        self.z_score_window = 8
+        self.z_score_window = 16
         self.z_score_threshold = 0.5
         self.z_score = 0.0
         self.ema_anchor: float | None = None
