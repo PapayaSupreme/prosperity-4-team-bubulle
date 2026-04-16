@@ -1,6 +1,9 @@
 # FROM v1.3 - implement z_score + EMA of current_mid as anchor + z_score-related passive bid & ask size adjustments
-# MC(z_score_window): 50 514 -> 12: 50 635 -> 16: 50 646 -> 20: 50 495
-# 9 585 for z_score_window = 12 OR 16
+# MC(z_score_window): 8: 50 514 -> 12: 50 635 -> 16: 50 646 -> 20: 50 495
+# MC(16, skew_window): [-1;1]: 50 646 -> [-1.5;1.5]: 50 973 -> [-2;2]: 51 994
+# Prosperity(z_score_window, skew_window): 9 585
+# FOR z_score_window = 12, 16 | skew_window = [-1;1], [-1.5;1.5], [-2;2]
+# CURRENT: (16, [-2;2]) = 9 585
 import json
 from abc import abstractmethod
 from typing import Any
@@ -504,7 +507,7 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
             variance = sum((x - mean_) ** 2 for x in self.residual_history) / len(self.residual_history)
             std = variance ** 0.5
 
-            if std >= 1e-6:
+            if std >= 0.1:
                 z = (residual - mean_) / std
 
         self.residual_history.append(residual)
@@ -597,7 +600,17 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
         base_bid_size = buy_left
         base_ask_size = sell_left
 
-        if self.z_score > 1.0:
+        if self.z_score == 2:
+            # Absurdly Rich vs anchor -> lean only short
+            bid_size = 0
+            ask_size = base_ask_size
+
+        elif self.z_score > 1.5:
+            # Very Rich vs anchor -> lean very short
+            bid_size = max(base_bid_size // 4, 2)
+            ask_size = base_ask_size
+
+        elif self.z_score > 1.0:
             # Rich vs anchor -> lean short
             bid_size = max(base_bid_size // 3, 4)
             ask_size = base_ask_size
@@ -606,6 +619,16 @@ class AshAdaptiveMarketMaker(StatefulStrategy):
             # Mildly rich
             bid_size = max(base_bid_size // 2, 6)
             ask_size = base_ask_size
+
+        elif self.z_score == -2:
+            # Absurdly Cheap vs anchor -> lean only long
+            bid_size = base_bid_size
+            ask_size = 0
+
+        elif self.z_score < -1.5:
+            # Very Cheap vs anchor -> lean very long
+            bid_size = base_bid_size
+            ask_size = max(base_ask_size // 4, 2)
 
         elif self.z_score < -1.0:
             # Cheap vs anchor -> lean long
