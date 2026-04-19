@@ -1,6 +1,6 @@
-# FROM v1.4 - no changes
-# MC: 22 346.6
-# -6 649
+# FROM v2.0 - updated affine default for intarian
+# MC: TBD
+# TBD
 import json
 from abc import abstractmethod
 from typing import Any
@@ -267,7 +267,7 @@ class StatefulStrategy(Strategy):
 class IntarianMarketMaker(StatefulStrategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
-        self.fair_value: float = 12000.0
+        self.fair_value: float = 11000.0
         self.soft_pos = 40
         self.hard_pos = 70
         self.error_threshold = 10.0

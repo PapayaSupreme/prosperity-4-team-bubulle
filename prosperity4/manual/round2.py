@@ -14,12 +14,13 @@ def scale(x: int) -> float:
     if x > 100:
         return -1
     else:
-        return x * 0.7
+        return x * 0.07
 
+speed_mult = 0.1
 pnl_all = np.zeros(101)
 # 0 -> research(0), scale(100)   100 -> research(100), scale(0)
 for i in range(101):
-    pnl_all[i] = research(i) * scale(100 - i)
+    pnl_all[i] = round(research(i)) * round(scale(100 - i), 1) * speed_mult
 #plot pnl_all as y and [0, 100] as x
 print(np.max(pnl_all), np.where(pnl_all == np.max(pnl_all)))
 x_abs = np.arange(0, 101)
@@ -29,3 +30,5 @@ plt.ylabel('PnL')
 plt.title('PnL vs Research Investment')
 plt.grid()
 plt.show()
+
+#best safe is 25 * 75

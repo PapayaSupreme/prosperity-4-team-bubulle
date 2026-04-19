@@ -1,6 +1,6 @@
-# FROM v1.4 - no changes
-# MC: 22 346.6
-# -6 649
+# FROM v2.0 - removed Intarian Pepper algo
+# MC: 54 259
+# 1 605
 import json
 from abc import abstractmethod
 from typing import Any
@@ -670,7 +670,7 @@ class Trader:
         }
 
         self.strategies: dict[Symbol, Strategy] = {
-            "INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
+            #"INTARIAN_PEPPER_ROOT": IntarianMarketMaker("INTARIAN_PEPPER_ROOT", limits["INTARIAN_PEPPER_ROOT"]),
             "ASH_COATED_OSMIUM": AshAdaptiveMarketMaker("ASH_COATED_OSMIUM", limits["ASH_COATED_OSMIUM"]),
         }
 
