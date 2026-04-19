@@ -6,7 +6,7 @@ def research(x: int) -> int:
     if x > 100:
         return -1
     else:
-        pnl = 200_000 * np.log(1 + x) / np.log(1 + 100)
+        pnl = 200000 * np.log(1 + x) / np.log(1 + 100)
         return pnl
 
 def scale(x: int) -> float:
@@ -16,18 +16,16 @@ def scale(x: int) -> float:
     else:
         return x * 0.7
 
-pnl_all = []
+pnl_all = np.zeros(101)
 # 0 -> research(0), scale(100)   100 -> research(100), scale(0)
 for i in range(101):
-    pnl_all.append(research(i) * scale(100 - i))
+    pnl_all[i] = research(i) * scale(100 - i)
 #plot pnl_all as y and [0, 100] as x
-pnl_all = np.array(pnl_all)
 print(np.max(pnl_all), np.where(pnl_all == np.max(pnl_all)))
-x = np.arange(0, 101)
-plt.plot(x, pnl_all)
+x_abs = np.arange(0, 101)
+plt.plot(x_abs, pnl_all)
 plt.xlabel('Research Investment (%) - remaining goes to Scale')
 plt.ylabel('PnL')
 plt.title('PnL vs Research Investment')
 plt.grid()
 plt.show()
-
