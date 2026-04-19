@@ -1,6 +1,6 @@
 # FROM v2.0 - removed Intarian Pepper algo
 # MC: 54 259
-# 1 605
+# 1 605 - 1 489 - 1 254 - 1 702 - 1 627
 import json
 from abc import abstractmethod
 from typing import Any
