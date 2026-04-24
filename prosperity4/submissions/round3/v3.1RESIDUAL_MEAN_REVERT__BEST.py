@@ -1,5 +1,5 @@
-# FROM v1.4 - implements its strat to both  hydrogel packs and velvetfruit extracts
-# PnL : - 21 625
+# FROM v3.0 - changes fair value from substracting capped z-score to substracting residual-based mean reversion
+# PnL : 1 583
 
 import json
 from abc import abstractmethod
@@ -272,6 +272,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
         self.fair_value: float | None = None
         self.residual_history: list[float] = []
         self.ema_alpha = 0.1
+        self.residual_alpha = 0.25
         self.z_score_coeff = 1.0
         self.z_score_window = 16
         self.z_score_threshold = 0.5
@@ -302,13 +303,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
         anchor = self.ema_anchor if prev_anchor is None else prev_anchor
         residual = current_mid - anchor
 
-
-        self._compute_zscore(residual)
-
-        if abs(self.z_score) < self.z_score_threshold:
-            return self.ema_anchor
-
-        return self.ema_anchor - self.z_score_coeff * self.z_score
+        return current_mid - self.residual_alpha * residual
 
     def _update_ema_anchor(self, current_mid: float) -> None:
         if self.ema_anchor is None:

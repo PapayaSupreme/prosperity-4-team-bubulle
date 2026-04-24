@@ -1,5 +1,5 @@
-# FROM v1.4 - changes capped z-score to residual-based mean reversion fair value shift
-# PnL : - TBD
+# FROM v3.1 - now doesn't quote base_bid_size and ask when near anchor
+# PnL : TBD
 
 import json
 from abc import abstractmethod
@@ -272,6 +272,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
         self.fair_value: float | None = None
         self.residual_history: list[float] = []
         self.ema_alpha = 0.1
+        self.residual_alpha = 0.25
         self.z_score_coeff = 1.0
         self.z_score_window = 16
         self.z_score_threshold = 0.5
@@ -302,13 +303,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
         anchor = self.ema_anchor if prev_anchor is None else prev_anchor
         residual = current_mid - anchor
 
-
-        self._compute_zscore(residual)
-
-        if abs(self.z_score) < self.z_score_threshold:
-            return self.ema_anchor
-
-        return self.ema_anchor - self.z_score_coeff * self.z_score
+        return current_mid - self.residual_alpha * residual
 
     def _update_ema_anchor(self, current_mid: float) -> None:
         if self.ema_anchor is None:
@@ -328,6 +323,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
         best_ask = sell_orders[0][0]
         current_mid = (best_bid + best_ask) / 2
 
+        # === UNUSED ===
         # Microprice weights prices by opposite-side top-of-book volume.
         best_bid_vol = max(0, buy_orders[0][1])
         best_ask_vol = max(0, -sell_orders[0][1])
@@ -337,6 +333,7 @@ class AdaptiveMarketMaker(StatefulStrategy):
             if top_vol > 0
             else current_mid
         )
+        # === UNUSED ===
 
         self.fair_value = self._estimate_fair_value(current_mid)
         fair_value = self.fair_value if self.fair_value is not None else current_mid
