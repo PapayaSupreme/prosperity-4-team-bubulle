@@ -1,4 +1,6 @@
 # FROM v1.4 - implements its strat to both  hydrogel packs and velvetfruit extracts
+# PnL : - 8477
+
 import json
 from abc import abstractmethod
 from typing import Any
@@ -464,12 +466,13 @@ class Trader:
 
     def __init__(self) -> None:
         limits = {
-            "HYDROGEN_PACK": 80,
-            "VELVETFRUIT_EXTRACT": 80,
+            "HYDROGEL_PACK": 200,
+            "VELVETFRUIT_EXTRACT": 200,
+            "VELVETFRUIT_EXTRACT_VOUCHER": 300, # for each of the 10 vouchers
         }
 
         self.strategies: dict[Symbol, Strategy] = {
-            "HYDROGEN_PACK": AdaptiveMarketMaker("HYDROGEN_PACK", limits["HYDROGEN_PACK"]),
+            "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"]),
             "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"]),
         }
 
