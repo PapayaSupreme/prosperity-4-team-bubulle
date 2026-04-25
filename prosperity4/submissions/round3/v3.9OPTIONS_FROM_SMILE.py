@@ -432,7 +432,8 @@ class OptionTrader(Strategy):
         d1 = (math.log(spot / strike) + 0.5 * sigma * sigma * self.tte_years) / (sigma * sqrt_t)
         d2 = d1 - sigma * sqrt_t
 
-        return spot * self._norm_cdf(d1) - strike * self._norm_cdf(d2)
+        value = spot * self._norm_cdf(d1) - strike * self._norm_cdf(d2)
+        return max(0.0, value)
 
     def _expected_fair_price(self, spot: float) -> float:
         """Fair option value from your fitted IV smile."""
@@ -514,9 +515,22 @@ class Trader:
             "VELVETFRUIT_EXTRACT_VOUCHER": 300, # for each of the 10 vouchers
         }
 
+        option_symbols_to_trade: dict[Symbol, int] = {
+            "VEV_4000": 4000,
+            "VEV_4500": 4500,
+        }
+
         self.strategies: dict[Symbol, Strategy] = {
             "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"]),
             "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"]),
+            **{
+                symbol: OptionTrader(
+                    symbol=symbol,
+                    limit=limits["VELVETFRUIT_EXTRACT_VOUCHER"],
+                    strike=strike,
+                )
+                for symbol, strike in option_symbols_to_trade.items()
+            },
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
