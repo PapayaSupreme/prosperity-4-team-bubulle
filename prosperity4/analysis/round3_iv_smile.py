@@ -109,7 +109,7 @@ def build_iv_dataset(sample_every: int) -> pd.DataFrame:
 
     # VEV vouchers have fixed time to expiry assumption: 5 trading days.
     merged["ttm_years"] = 5.0 / 365.0
-    merged["moneyness"] = np.log(merged["strike"] / merged["spot"])
+    merged["moneyness"] = np.log(merged["strike"] / merged["spot"]) # / np.sqrt(merged["spot"])
 
     merged["implied_vol"] = merged.apply(
         lambda row: implied_vol_call(
