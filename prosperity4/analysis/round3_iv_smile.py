@@ -107,14 +107,8 @@ def build_iv_dataset(sample_every: int) -> pd.DataFrame:
 
     merged = options.merge(underlying, on=["day", "timestamp"], how="inner")
 
-    tick_step = float(np.diff(timestamps_sorted).min()) if len(timestamps_sorted) > 1 else 100.0
-    ticks_per_day = len(timestamps_sorted)
-    max_day = int(raw["day"].max())
-    max_tick_index = int(round(float(timestamps_sorted.max()) / tick_step))
-
-    tick_index = (merged["timestamp"] / tick_step).round().astype(int)
-    remaining_ticks = (max_day - merged["day"]) * ticks_per_day + (max_tick_index - tick_index)
-    merged["ttm_years"] = np.maximum(remaining_ticks / (ticks_per_day * 365.0), 1e-6)
+    # VEV vouchers have fixed time to expiry assumption: 5 trading days.
+    merged["ttm_years"] = 5.0 / 365.0
     merged["moneyness"] = np.log(merged["strike"] / merged["spot"])
 
     merged["implied_vol"] = merged.apply(

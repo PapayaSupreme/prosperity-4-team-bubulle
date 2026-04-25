@@ -303,19 +303,9 @@ class AdaptiveMarketMaker(StatefulStrategy):
         best_ask = sell_orders[0][0]
         current_mid = (best_bid + best_ask) / 2
 
-        # Microprice weights prices by opposite-side top-of-book volume.
-        best_bid_vol = max(0, buy_orders[0][1])
-        best_ask_vol = max(0, -sell_orders[0][1])
-        top_vol = best_bid_vol + best_ask_vol
-        microprice = (
-            (best_ask * best_bid_vol + best_bid * best_ask_vol) / top_vol
-            if top_vol > 0
-            else current_mid
-        )
+        fair_value = self._estimate_fair_value(current_mid)
 
-        self.fair_value = self._estimate_fair_value(current_mid)
-        fair_value = self.fair_value if self.fair_value is not None else current_mid
-
+        self.fair_value = fair_value
         # ============================================================
         # 1) TAKE OBVIOUS MISPRICINGS AROUND ESTIMATED FAIR VALUE
         # ============================================================
