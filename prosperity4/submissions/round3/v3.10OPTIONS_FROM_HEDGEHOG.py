@@ -162,16 +162,16 @@ OPTION_LIMIT = 300
 DAYS_PER_YEAR = 365
 DAY = 5
 
-THR_OPEN, THR_CLOSE = 0.5, 0.0
-LOW_VEGA_THR_ADJ = 0.5
+THR_OPEN, THR_CLOSE = 0.5, 0.1
+LOW_VEGA_THR_ADJ = 0.3
 
 THEO_NORM_WINDOW = 20
-IV_SCALPING_THR = 0.7
+IV_SCALPING_THR = 0.5
 IV_SCALPING_WINDOW = 100
 
-underlying_mean_reversion_thr = 15
+underlying_mean_reversion_thr = 10
 underlying_mean_reversion_window = 10
-options_mean_reversion_thr = 5
+options_mean_reversion_thr = 2
 options_mean_reversion_window = 30
 
 class Strategy:
@@ -673,22 +673,14 @@ class Trader:
             "VELVETFRUIT_EXTRACT_VOUCHER": 300, # for each of the 10 vouchers
         }
 
-        option_symbols_to_trade: dict[Symbol, int] = {
-            "VEV_4000": 4000,
-            "VEV_4500": 4500,
-        }
-
-        self.strategies: dict[Symbol, Strategy] = {
+        self.strategies: dict[str, Any] = {
             "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"]),
             "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"]),
-            **{
-                symbol: OptionTrader(
-                    symbol=symbol,
-                    limit=limits["VELVETFRUIT_EXTRACT_VOUCHER"],
-                    strike=strike,
-                )
-                for symbol, strike in option_symbols_to_trade.items()
-            },
+            "OPTIONS_PORTFOLIO": OptionsPortfolioStrategy(
+                OPTION_UNDERLYING_SYMBOL,
+                limits["VELVETFRUIT_EXTRACT"],
+                limits["VELVETFRUIT_EXTRACT_VOUCHER"],
+            ),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
@@ -698,17 +690,23 @@ class Trader:
         orders: dict[Symbol, list[Order]] = {}
         conversions = 0
 
-        for symbol, strategy in self.strategies.items():
-            if isinstance(strategy, StatefulStrategy) and symbol in old_trader_data:
-                strategy.load(old_trader_data[symbol])
+        for strategy_key, strategy in self.strategies.items():
+            if isinstance(strategy, StatefulStrategy) and strategy_key in old_trader_data:
+                strategy.load(old_trader_data[strategy_key])
 
             strategy_orders, strategy_conversions = strategy.run(state)
-            if strategy_orders:
-                orders[symbol] = strategy_orders
             conversions += strategy_conversions
 
+            if isinstance(strategy_orders, dict):
+                for symbol, symbol_orders in strategy_orders.items():
+                    if symbol_orders:
+                        orders.setdefault(symbol, []).extend(symbol_orders)
+            else:
+                if strategy_orders:
+                    orders.setdefault(strategy_key, []).extend(strategy_orders)
+
             if isinstance(strategy, StatefulStrategy):
-                new_trader_data[symbol] = strategy.save()
+                new_trader_data[strategy_key] = strategy.save()
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
         logger.flush(state, orders, conversions, trader_data)
