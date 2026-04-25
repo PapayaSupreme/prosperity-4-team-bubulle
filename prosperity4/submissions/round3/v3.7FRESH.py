@@ -1,4 +1,4 @@
-# FROM v3.1 - anchor is now fixed, passive quote size skew, new variance parameter
+# FROM v3.1 - refactor for clarity
 # PnL : 1 583
 # MC : 19 856 + 8 544
 import json
@@ -156,10 +156,9 @@ logger = Logger()
 
 
 class Strategy:
-    def __init__(self, symbol: Symbol, limit: int, variance: int) -> None:
+    def __init__(self, symbol: Symbol, limit: int) -> None:
         self.symbol = symbol
         self.limit = limit
-        self.variance = variance
 
     def get_required_symbols(self) -> list[Symbol]:
         return [self.symbol]
@@ -268,34 +267,13 @@ class StatefulStrategy(Strategy):
 
 class AdaptiveMarketMaker(StatefulStrategy):
     """Market maker algorithm intended for stocks mean-reversing around a semi-fixed anchor"""
-    def __init__(self, symbol: Symbol, limit: int, variance: int) -> None:
-        super().__init__(symbol, limit, variance)
-        self.skew_strength = 1
+    def __init__(self, symbol: Symbol, limit: int) -> None:
+        super().__init__(symbol, limit)
         self.fair_value: float | None = None
         self.residual_history: list[float] = []
-        self.ema_alpha = 0.0
+        self.ema_alpha = 0.1
         self.residual_alpha = 0.25
-        self.z_score_coeff = 1.0
-        self.z_score_window = 16
-        self.z_score_threshold = 0.5
-        self.z_score = 0.0
         self.ema_anchor: float | None = None
-
-    def _compute_zscore(self, residual: float) -> None: # Use once !!
-        z = 0.0
-        if len(self.residual_history) >= 4:
-            mean_ = sum(self.residual_history) / len(self.residual_history)
-            variance = sum((x - mean_) ** 2 for x in self.residual_history) / len(self.residual_history)
-            std = variance ** 0.5
-
-            if std >= 0.1:
-                z = (residual - mean_) / std
-
-        self.residual_history.append(residual)
-        if len(self.residual_history) > self.z_score_window:
-            self.residual_history.pop(0)
-
-        self.z_score =  max(-2.0, min(2.0, z))
 
     def _estimate_fair_value(self, current_mid: float) -> float:
         prev_anchor = self.ema_anchor
@@ -372,62 +350,8 @@ class AdaptiveMarketMaker(StatefulStrategy):
         bid_quote = min(bid_quote, best_ask - 1)
         ask_quote = max(ask_quote, best_bid + 1)
 
-        base_bid_size = buy_left
-        base_ask_size = sell_left
-
-        if self.z_score == 2:
-            # Absurdly Rich vs anchor -> lean only short
-            bid_size = 0
-            ask_size = base_ask_size
-
-        elif self.z_score > 1.5:
-            # Very Rich vs anchor -> lean very short
-            bid_size = max(base_bid_size // 4, 2)
-            ask_size = base_ask_size
-
-        elif self.z_score > 1.0:
-            # Rich vs anchor -> lean short
-            bid_size = max(base_bid_size // 3, 4)
-            ask_size = base_ask_size
-
-        elif self.z_score > 0.5:
-            # Mildly rich
-            bid_size = max(base_bid_size // 2, 6)
-            ask_size = base_ask_size
-
-        elif self.z_score == -2:
-            # Absurdly Cheap vs anchor -> lean only long
-            bid_size = base_bid_size
-            ask_size = 0
-
-        elif self.z_score < -1.5:
-            # Very Cheap vs anchor -> lean very long
-            bid_size = base_bid_size
-            ask_size = max(base_ask_size // 4, 2)
-
-        elif self.z_score < -1.0:
-            # Cheap vs anchor -> lean long
-            bid_size = base_bid_size
-            ask_size = max(base_ask_size // 3, 4)
-
-        elif self.z_score < -0.5:
-            # Mildly cheap
-            bid_size = base_bid_size
-            ask_size = max(base_ask_size // 2, 6)
-
-        else:
-            # Near anchor
-            bid_size = base_bid_size
-            ask_size = base_ask_size
-
-        position_signal = position / self.limit
-        anchor_signal = (current_mid - self.ema_anchor) / self.variance
-
-        skew = 0.7 * position_signal + 0.5 * anchor_signal
-        skew = max(-1.0, min(1.0, skew))
-
-        bid_size = int(bid_size * max(0.2, 1 - skew))
-        ask_size = int(ask_size * max(0.2, 1 + skew))
+        bid_size = buy_left
+        ask_size = sell_left
 
         # ============================================================
         # 3) POST PASSIVE ORDERS
@@ -440,7 +364,6 @@ class AdaptiveMarketMaker(StatefulStrategy):
             "fair_value": self.fair_value,
             "ema_anchor": self.ema_anchor,
             "residual_history": self.residual_history,
-            "z_score": self.z_score
         }
 
     def load(self, data: JSON) -> None:
@@ -459,10 +382,6 @@ class AdaptiveMarketMaker(StatefulStrategy):
         if isinstance(ema_anchor, (int, float)):
             self.ema_anchor = float(ema_anchor)
 
-        z_score = data.get("z_score")
-        if isinstance(z_score, (int, float)):
-            self.z_score = float(z_score)
-
 
 class Trader:
     """
@@ -477,14 +396,9 @@ class Trader:
             "VELVETFRUIT_EXTRACT_VOUCHER": 300, # for each of the 10 vouchers
         }
 
-        variances = {
-            "HYDROGEL_PACK": 25,
-            "VELVETFRUIT_EXTRACT": 25,
-        }
-
         self.strategies: dict[Symbol, Strategy] = {
-            "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"], variances["HYDROGEL_PACK"]),
-            "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"], variances["VELVETFRUIT_EXTRACT"]),
+            "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"]),
+            "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
