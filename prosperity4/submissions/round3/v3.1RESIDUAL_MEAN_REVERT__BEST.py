@@ -1,6 +1,6 @@
 # FROM v3.0 - changes fair value from substracting capped z-score to substracting residual-based mean reversion
 # PnL : 1 583
-
+# MC : 19 856 + 8 544
 import json
 from abc import abstractmethod
 from typing import Any

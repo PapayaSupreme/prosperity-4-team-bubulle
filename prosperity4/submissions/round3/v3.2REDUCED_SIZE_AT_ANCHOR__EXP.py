@@ -1,6 +1,10 @@
-# FROM v3.1 - now doesn't quote base_bid_size and ask when near anchor
+# FROM v3.1 - anchor is now fixed, passive quote size skew, new variance parameter
 # PnL : TBD
-
+# MC : 177995.00  runs/backtest-1777105063494
+#
+# PRODUCT             round3-carry
+# HYDROGEL_PACK          109298.00
+# VELVETFRUIT_EXTRACT     68697.00
 import json
 from abc import abstractmethod
 from typing import Any
@@ -156,9 +160,10 @@ logger = Logger()
 
 
 class Strategy:
-    def __init__(self, symbol: Symbol, limit: int) -> None:
+    def __init__(self, symbol: Symbol, limit: int, variance: int) -> None:
         self.symbol = symbol
         self.limit = limit
+        self.variance = variance
 
     def get_required_symbols(self) -> list[Symbol]:
         return [self.symbol]
@@ -267,11 +272,12 @@ class StatefulStrategy(Strategy):
 
 class AdaptiveMarketMaker(StatefulStrategy):
     """Market maker algorithm intended for stocks mean-reversing around a semi-fixed anchor"""
-    def __init__(self, symbol: Symbol, limit: int) -> None:
-        super().__init__(symbol, limit)
+    def __init__(self, symbol: Symbol, limit: int, variance: int) -> None:
+        super().__init__(symbol, limit, variance)
+        self.skew_strength = 1
         self.fair_value: float | None = None
         self.residual_history: list[float] = []
-        self.ema_alpha = 0.1
+        self.ema_alpha = 0.0
         self.residual_alpha = 0.25
         self.z_score_coeff = 1.0
         self.z_score_window = 16
@@ -323,7 +329,6 @@ class AdaptiveMarketMaker(StatefulStrategy):
         best_ask = sell_orders[0][0]
         current_mid = (best_bid + best_ask) / 2
 
-        # === UNUSED ===
         # Microprice weights prices by opposite-side top-of-book volume.
         best_bid_vol = max(0, buy_orders[0][1])
         best_ask_vol = max(0, -sell_orders[0][1])
@@ -333,7 +338,6 @@ class AdaptiveMarketMaker(StatefulStrategy):
             if top_vol > 0
             else current_mid
         )
-        # === UNUSED ===
 
         self.fair_value = self._estimate_fair_value(current_mid)
         fair_value = self.fair_value if self.fair_value is not None else current_mid
@@ -420,6 +424,15 @@ class AdaptiveMarketMaker(StatefulStrategy):
             bid_size = base_bid_size
             ask_size = base_ask_size
 
+        position_signal = position / self.limit
+        anchor_signal = (current_mid - self.ema_anchor) / self.variance
+
+        skew = 0.7 * position_signal + 0.5 * anchor_signal
+        skew = max(-1.0, min(1.0, skew))
+
+        bid_size = int(bid_size * max(0.2, 1 - skew))
+        ask_size = int(ask_size * max(0.2, 1 + skew))
+
         # ============================================================
         # 3) POST PASSIVE ORDERS
         # ============================================================
@@ -468,9 +481,14 @@ class Trader:
             "VELVETFRUIT_EXTRACT_VOUCHER": 300, # for each of the 10 vouchers
         }
 
+        variances = {
+            "HYDROGEL_PACK": 25,
+            "VELVETFRUIT_EXTRACT": 25,
+        }
+
         self.strategies: dict[Symbol, Strategy] = {
-            "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"]),
-            "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"]),
+            "HYDROGEL_PACK": AdaptiveMarketMaker("HYDROGEL_PACK", limits["HYDROGEL_PACK"], variances["HYDROGEL_PACK"]),
+            "VELVETFRUIT_EXTRACT": AdaptiveMarketMaker("VELVETFRUIT_EXTRACT", limits["VELVETFRUIT_EXTRACT"], variances["VELVETFRUIT_EXTRACT"]),
         }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
