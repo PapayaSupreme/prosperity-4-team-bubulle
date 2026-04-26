@@ -516,9 +516,12 @@ class Trader:
 
         # Names come from the trades CSV buyer/seller columns (e.g. "Mark 01").
         self.informed_trader_names = ["Mark 14"]
-        self.informed_base_order_size = 24
-        self.informed_size_per_lot = 2
-        self.informed_max_order_size = 70
+        self.informed_base_order_size = 20
+        self.informed_size_per_lot = 8
+        self.informed_max_order_size = 60
+        self.informed_flow_memory: dict[Symbol, float] = {}
+        self.informed_flow_decay = 0.80
+        self.informed_signal_threshold = 2.0
 
         self.strategies: dict[str, Any] = {
             "HYDROGEL_PACK": AnchoredMarketMaker(
@@ -556,22 +559,55 @@ class Trader:
         pending = sum(order.quantity for order in orders.get(symbol, []))
         return state.position.get(symbol, 0) + pending
 
-    def _extract_informed_flow_signal(self, state: TradingState) -> dict[Symbol, int]:
+    def _extract_informed_flow_signal(self, state: TradingState) -> dict[Symbol, float]:
         if not self.informed_trader_names:
             return {}
 
-        signal_by_symbol: dict[Symbol, int] = {}
-        for symbol, trades in state.market_trades.items():
-            score = 0
-            for trade in trades:
-                qty = int(trade.quantity)
-                if trade.buyer in self.informed_trader_names:
-                    score += qty
-                if trade.seller in self.informed_trader_names:
-                    score -= qty
+        signal_by_symbol: dict[Symbol, float] = {}
 
-            if score != 0:
-                signal_by_symbol[symbol] = score
+        for symbol, trades in state.market_trades.items():
+            if symbol not in state.order_depths:
+                continue
+
+            depth = state.order_depths[symbol]
+            if not depth.buy_orders or not depth.sell_orders:
+                continue
+
+            best_bid = max(depth.buy_orders.keys())
+            best_ask = min(depth.sell_orders.keys())
+            mid = (best_bid + best_ask) / 2.0
+
+            raw_score = 0.0
+            total_informed_qty = 0
+
+            for trade in trades:
+                if trade.buyer not in self.informed_trader_names and trade.seller not in self.informed_trader_names:
+                    continue
+
+                qty = int(trade.quantity)
+                total_informed_qty += qty
+
+                # Buyer is informed: bullish, but stronger if bought above/near mid
+                if trade.buyer in self.informed_trader_names:
+                    price_edge = trade.price - mid
+                    raw_score += qty * max(0.5, 1.0 + price_edge / 2.0)
+
+                # Seller is informed: bearish, but stronger if sold below/near mid
+                if trade.seller in self.informed_trader_names:
+                    price_edge = mid - trade.price
+                    raw_score -= qty * max(0.5, 1.0 + price_edge / 2.0)
+
+            if total_informed_qty == 0:
+                current_signal = 0.0
+            else:
+                current_signal = raw_score / max(1.0, total_informed_qty)
+
+            prev = self.informed_flow_memory.get(symbol, 0.0)
+            smoothed = self.informed_flow_decay * prev + current_signal
+            self.informed_flow_memory[symbol] = smoothed
+
+            if abs(smoothed) >= self.informed_signal_threshold:
+                signal_by_symbol[symbol] = smoothed
 
         return signal_by_symbol
 
@@ -597,7 +633,7 @@ class Trader:
             sell_left = limit + projected_position
             desired_size = min(
                 self.informed_max_order_size,
-                self.informed_base_order_size + self.informed_size_per_lot * abs(score),
+                int(self.informed_base_order_size + self.informed_size_per_lot * abs(score)),
             )
 
             if score > 0 and buy_left > 0:
