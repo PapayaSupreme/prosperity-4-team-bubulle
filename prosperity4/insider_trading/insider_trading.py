@@ -261,7 +261,7 @@ def participant_summary(df: pd.DataFrame, horizon: int = 3, min_trades: int = 3)
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[2] / "data" / "ROUND_1"
+    base_dir = Path(__file__).resolve().parents[2] / "data" / "ROUND_4"
     days = [-2, -1]
     horizons = (1, 3, 5)
     ranking_horizon = 3
