@@ -424,8 +424,7 @@ class OptionsPortfolioStrategy(StatefulStrategy):
         return new
 
     def _tte(self, timestamp: int) -> float:
-        tte = 1.0 - (DAYS_PER_YEAR - 8 + DAY + (timestamp // 100) / 10_000) / DAYS_PER_YEAR
-        return max(tte, 1e-6)
+        return 5.0 / 365.0
 
     def _get_option_values(self, spot: float, strike: float, tte: float) -> tuple[float, float, float]:
         m_t_k = math.log(strike / spot)
