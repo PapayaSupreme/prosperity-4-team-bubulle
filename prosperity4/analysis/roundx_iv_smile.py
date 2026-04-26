@@ -10,13 +10,13 @@ import pandas as pd
 import plotly.graph_objects as go
 
 try:
-    from prosperity4.analysis.data import read_all_round3_prices
+    from prosperity4.analysis.data import read_all_round4_prices
 except ModuleNotFoundError:
     # Allow running this file directly from the repository root.
-    from data import read_all_round3_prices
+    from data import read_all_round4_prices
 
 
-OUTPUT_DIR = Path(__file__).resolve().parent / "round3_outputs"
+OUTPUT_DIR = Path(__file__).resolve().parent / "round4_outputs"
 UNDERLYING_PRODUCT = "VELVETFRUIT_EXTRACT"
 OPTION_PREFIX = "VEV_"
 
@@ -86,7 +86,7 @@ def _best_mid(df: pd.DataFrame) -> pd.Series:
 
 
 def build_iv_dataset(sample_every: int) -> pd.DataFrame:
-    raw = read_all_round3_prices()
+    raw = read_all_round4_prices()
     if raw.empty:
         return raw
 
@@ -186,7 +186,7 @@ def save_outputs(iv_df: pd.DataFrame, coeffs: np.ndarray) -> None:
         )
     )
     fig.update_layout(
-        title="VEV Options: Implied Volatility vs Moneyness (Round 3)",
+        title="VEV Options: Implied Volatility vs Moneyness (Round 4)",
         xaxis_title="Moneyness = ln(K / S)",
         yaxis_title="Implied Volatility (annualized)",
         template="plotly_white",
@@ -203,7 +203,7 @@ def save_outputs(iv_df: pd.DataFrame, coeffs: np.ndarray) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Plot VEV IV vs moneyness and fit a quadratic smile for Round 3.")
+    parser = argparse.ArgumentParser(description="Plot VEV IV vs moneyness and fit a quadratic smile for Round 4.")
     parser.add_argument(
         "--sample-every",
         type=int,

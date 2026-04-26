@@ -1,5 +1,5 @@
-#FROM v3.11
-# PnL: 7 717
+#FROM v4.11
+#PnL: TBD
 import json
 import math
 from abc import abstractmethod
@@ -334,10 +334,10 @@ class OptionSmilePortfolio(StatefulStrategy):
         self.option_limit = option_limit
         self.ema_store: dict[str, float] = {}
 
-        # Coefficients from v3.9 and round3 smile analysis (stable in production).
-        self.smile_a = 2.473985
-        self.smile_b = 1.152545
-        self.smile_c = 0.276766
+        # Smile fit: iv = 3.000615 * m^2 + 1.171123 * m + 0.254329
+        self.smile_a = 3.000615
+        self.smile_b = 1.171123
+        self.smile_c = 0.254329
 
         self.edge_open = 1.4
         self.edge_close = 0.3
@@ -508,16 +508,22 @@ class Trader:
     """
 
     def __init__(self) -> None:
-        limits = {
+        self.limits = {
             "HYDROGEL_PACK": 200,
             "VELVETFRUIT_EXTRACT": 200,
             "VELVETFRUIT_EXTRACT_VOUCHER": 300,
         }
 
+        # Names come from the trades CSV buyer/seller columns (e.g. "Mark 01").
+        self.informed_trader_names = ["Mark 14"]
+        self.informed_base_order_size = 24
+        self.informed_size_per_lot = 2
+        self.informed_max_order_size = 70
+
         self.strategies: dict[str, Any] = {
             "HYDROGEL_PACK": AnchoredMarketMaker(
                 symbol="HYDROGEL_PACK",
-                limit=limits["HYDROGEL_PACK"],
+                limit=self.limits["HYDROGEL_PACK"],
                 anchor=9_994.0,
                 ema_alpha=0.08,
                 residual_alpha=0.30,
@@ -526,7 +532,7 @@ class Trader:
             ),
             "VELVETFRUIT_EXTRACT": AnchoredMarketMaker(
                 symbol="VELVETFRUIT_EXTRACT",
-                limit=limits["VELVETFRUIT_EXTRACT"],
+                limit=self.limits["VELVETFRUIT_EXTRACT"],
                 anchor=5_250.0,
                 ema_alpha=0.08,
                 residual_alpha=0.33,
@@ -535,9 +541,76 @@ class Trader:
             ),
             #"OPTIONS_PORTFOLIO": OptionSmilePortfolio(
             #    underlying_symbol=OPTION_UNDERLYING_SYMBOL,
-            #    option_limit=limits["VELVETFRUIT_EXTRACT_VOUCHER"],
+            #    option_limit=self.limits["VELVETFRUIT_EXTRACT_VOUCHER"],
             #),
         }
+
+    def _limit_for_symbol(self, symbol: Symbol) -> int:
+        if symbol in self.limits:
+            return self.limits[symbol]
+        if symbol.startswith(OPTION_PREFIX):
+            return self.limits["VELVETFRUIT_EXTRACT_VOUCHER"]
+        return 0
+
+    def _projected_position(self, state: TradingState, orders: dict[Symbol, list[Order]], symbol: Symbol) -> int:
+        pending = sum(order.quantity for order in orders.get(symbol, []))
+        return state.position.get(symbol, 0) + pending
+
+    def _extract_informed_flow_signal(self, state: TradingState) -> dict[Symbol, int]:
+        if not self.informed_trader_names:
+            return {}
+
+        signal_by_symbol: dict[Symbol, int] = {}
+        for symbol, trades in state.market_trades.items():
+            score = 0
+            for trade in trades:
+                qty = int(trade.quantity)
+                if trade.buyer in self.informed_trader_names:
+                    score += qty
+                if trade.seller in self.informed_trader_names:
+                    score -= qty
+
+            if score != 0:
+                signal_by_symbol[symbol] = score
+
+        return signal_by_symbol
+
+    def _apply_informed_overlay(
+        self,
+        state: TradingState,
+        orders: dict[Symbol, list[Order]],
+        signal_by_symbol: dict[Symbol, int],
+    ) -> None:
+        for symbol, score in sorted(signal_by_symbol.items(), key=lambda item: abs(item[1]), reverse=True):
+            limit = self._limit_for_symbol(symbol)
+            if limit <= 0:
+                continue
+            if symbol not in state.order_depths:
+                continue
+
+            depth = state.order_depths[symbol]
+            if not depth.buy_orders or not depth.sell_orders:
+                continue
+
+            projected_position = self._projected_position(state, orders, symbol)
+            buy_left = limit - projected_position
+            sell_left = limit + projected_position
+            desired_size = min(
+                self.informed_max_order_size,
+                self.informed_base_order_size + self.informed_size_per_lot * abs(score),
+            )
+
+            if score > 0 and buy_left > 0:
+                best_ask = min(depth.sell_orders.keys())
+                size = min(desired_size, buy_left)
+                if size > 0:
+                    orders.setdefault(symbol, []).append(Order(symbol, best_ask, size))
+
+            elif score < 0 < sell_left:
+                best_bid = max(depth.buy_orders.keys())
+                size = min(desired_size, sell_left)
+                if size > 0:
+                    orders.setdefault(symbol, []).append(Order(symbol, best_bid, -size))
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         old_trader_data = json.loads(state.traderData) if state.traderData else {}
@@ -563,6 +636,11 @@ class Trader:
 
             if isinstance(strategy, StatefulStrategy):
                 new_trader_data[strategy_key] = strategy.save()
+
+        signal_by_symbol = self._extract_informed_flow_signal(state)
+        self._apply_informed_overlay(state, orders, signal_by_symbol)
+        if signal_by_symbol:
+            logger.print("Informed flow signals:", signal_by_symbol)
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
         logger.flush(state, orders, conversions, trader_data)
