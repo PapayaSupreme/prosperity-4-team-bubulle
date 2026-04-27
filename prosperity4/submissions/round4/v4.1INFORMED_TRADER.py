@@ -398,7 +398,7 @@ class OptionSmilePortfolio(StatefulStrategy):
         return max(0.0, value)
 
     def _time_to_expiry(self, timestamp: int) -> float:
-        # Decay the 5-day tenor through the day; keep a small floor for numerical stability.
+        # Decay the 4-day tenor through the day; keep a small floor for numerical stability.
         progress = max(0.0, min(1.0, timestamp / 999_900.0))
         days_left = max(0.25, 5.0 * (1.0 - progress))
         return days_left / 365.0
