@@ -325,163 +325,123 @@ class AnchoredMarketMaker(StatefulStrategy):
         if isinstance(fair_value, (int, float)):
             self.fair_value = float(fair_value)
 
+class InsiderOptionFollower:
+    """
+    Trades VEV options only from informed flow on the underlying.
 
-class OptionSmilePortfolio(StatefulStrategy):
-    """Trade all VEV vouchers off a fitted IV smile with expiry-aware unwinds."""
+    Logic:
+    - If an informed trader buys VELVETFRUIT_EXTRACT, bullish underlying signal.
+    - Buy call vouchers.
+    - If an informed trader sells VELVETFRUIT_EXTRACT, bearish signal.
+    - Sell call vouchers.
+    """
 
-    def __init__(self, underlying_symbol: Symbol, option_limit: int) -> None:
-        super().__init__(underlying_symbol, limit=200)
+    def __init__(self, option_limit: int) -> None:
         self.option_limit = option_limit
-        self.ema_store: dict[str, float] = {}
+        self.max_order_size = 25
+        self.max_abs_position = 120
+        self.min_signal = 3.0
 
-        # Smile fit: iv = 3.000615 * m^2 + 1.171123 * m + 0.254329
-        self.smile_a = 3.000615
-        self.smile_b = 1.171123
-        self.smile_c = 0.254329
+    def _option_symbols(self, state: TradingState) -> list[Symbol]:
+        return sorted(
+            [s for s in state.order_depths if s.startswith(OPTION_PREFIX)],
+            key=lambda s: int(s.split("_")[-1])
+        )
 
-        self.edge_open = 1.4
-        self.edge_close = 0.3
-        self.max_order_size = 35
+    def run_single_option(
+        self,
+        state: TradingState,
+        symbol: Symbol,
+        signal: float,
+    ) -> dict[Symbol, list[Order]]:
 
-        # Last ~2% of each day focuses on flattening voucher inventory.
-        self.unwind_start_timestamp = 980_000
+        orders: dict[Symbol, list[Order]] = {}
 
-    def get_required_symbols(self) -> list[Symbol]:
-        return [self.symbol]
+        if abs(signal) < 1.5:
+            return orders
 
-    def _discover_option_symbols(self, state: TradingState) -> list[Symbol]:
-        symbols = [symbol for symbol in state.order_depths.keys() if symbol.startswith(OPTION_PREFIX)]
+        depth = state.order_depths.get(symbol)
+        if depth is None or not depth.buy_orders or not depth.sell_orders:
+            return orders
 
-        def strike(sym: Symbol) -> int:
-            return int(sym.split("_")[-1])
+        best_bid = max(depth.buy_orders.keys())
+        best_ask = min(depth.sell_orders.keys())
 
-        return sorted(symbols, key=strike)
+        position = state.position.get(symbol, 0)
 
-    def _extract_strike(self, symbol: Symbol) -> int | None:
-        try:
-            return int(symbol.split("_")[-1])
-        except (ValueError, IndexError):
-            return None
+        if abs(position) >= self.max_abs_position:
+            return orders
 
-    def _book_mid(self, state: TradingState, symbol: Symbol) -> tuple[float | None, int | None, int | None]:
-        if symbol not in state.order_depths:
-            return None, None, None
+        buy_left = self.option_limit - position
+        sell_left = self.option_limit + position
 
-        depth = state.order_depths[symbol]
-        if not depth.buy_orders and not depth.sell_orders:
-            return None, None, None
+        size = min(
+            self.max_order_size,
+            int(8 + 5 * abs(signal)),
+        )
 
-        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else None
-        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else None
+        if signal > 0 and buy_left > 0:
+            orders.setdefault(symbol, []).append(Order(symbol, best_ask, min(size, buy_left)))
 
-        if best_bid is not None and best_ask is not None:
-            return (best_bid + best_ask) / 2.0, best_bid, best_ask
-        if best_ask is not None:
-            return best_ask - 0.5, best_ask - 1, best_ask
-        return best_bid + 0.5, best_bid, best_bid + 1
+        elif signal < 0 and sell_left > 0:
+            orders.setdefault(symbol, []).append(Order(symbol, best_bid, -min(size, sell_left)))
 
-    def _norm_cdf(self, x: float) -> float:
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+        return orders
 
-    def _bs_call_price(self, spot: float, strike: float, sigma: float, tte_years: float) -> float:
-        if spot <= 0.0 or strike <= 0.0:
-            return 0.0
-        if tte_years <= 0.0:
-            return max(spot - strike, 0.0)
+    def run(
+        self,
+        state: TradingState,
+        underlying_signal: float,
+    ) -> dict[Symbol, list[Order]]:
 
-        sigma = max(1e-9, sigma)
-        sqrt_t = math.sqrt(tte_years)
-        d1 = (math.log(spot / strike) + 0.5 * sigma * sigma * tte_years) / (sigma * sqrt_t)
-        d2 = d1 - sigma * sqrt_t
+        orders: dict[Symbol, list[Order]] = {}
 
-        value = spot * self._norm_cdf(d1) - strike * self._norm_cdf(d2)
-        return max(0.0, value)
+        if abs(underlying_signal) < self.min_signal:
+            return orders
 
-    def _time_to_expiry(self, timestamp: int) -> float:
-        # Decay the 4-day tenor through the day; keep a small floor for numerical stability.
-        progress = max(0.0, min(1.0, timestamp / 999_900.0))
-        days_left = max(0.25, 5.0 * (1.0 - progress))
-        return days_left / 365.0
-
-    def _expected_fair_value(self, spot: float, strike: int, tte_years: float) -> float:
-        moneyness = math.log(strike / spot)
-        fitted_iv = self.smile_a * moneyness * moneyness + self.smile_b * moneyness + self.smile_c
-        fitted_iv = max(0.05, min(3.0, fitted_iv))
-        return self._bs_call_price(spot, float(strike), fitted_iv, tte_years)
-
-    def _ema(self, key: str, window: int, value: float) -> float:
-        alpha = 2.0 / (window + 1)
-        prev = self.ema_store.get(key, value)
-        current = alpha * value + (1.0 - alpha) * prev
-        self.ema_store[key] = current
-        return current
-
-    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int]:
-        orders_by_symbol: dict[Symbol, list[Order]] = {}
-
-        spot, _, _ = self._book_mid(state, self.symbol)
-        if spot is None:
-            return orders_by_symbol, 0
-
-        tte_years = self._time_to_expiry(state.timestamp)
-        option_symbols = self._discover_option_symbols(state)
+        option_symbols = self._option_symbols(state)
         if not option_symbols:
-            return orders_by_symbol, 0
+            return orders
 
-        unwind_mode = state.timestamp >= self.unwind_start_timestamp
+        # Trade mostly ATM-ish options: middle strikes
+        mid_index = len(option_symbols) // 2
+        selected_options = option_symbols[max(0, mid_index - 1): mid_index + 2]
 
-        for option_symbol in option_symbols:
-            strike = self._extract_strike(option_symbol)
-            if strike is None:
+        for symbol in selected_options:
+            depth = state.order_depths.get(symbol)
+            if depth is None or not depth.buy_orders or not depth.sell_orders:
                 continue
 
-            option_mid, best_bid, best_ask = self._book_mid(state, option_symbol)
-            if option_mid is None or best_bid is None or best_ask is None:
+            best_bid = max(depth.buy_orders.keys())
+            best_ask = min(depth.sell_orders.keys())
+
+            position = state.position.get(symbol, 0)
+
+            # Extra safety cap
+            if abs(position) >= self.max_abs_position:
                 continue
 
-            position = state.position.get(option_symbol, 0)
-            buy_left = self.option_limit - position
-            sell_left = self.option_limit + position
+            buy_left = min(self.option_limit - position, self.max_abs_position - position)
+            sell_left = min(self.option_limit + position, self.max_abs_position + position)
 
-            if unwind_mode:
-                if position > 0:
-                    size = min(position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
-                elif position < 0:
-                    size = min(-position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
-                continue
+            size = min(
+                self.max_order_size,
+                int(6 + 4 * abs(underlying_signal)),
+            )
 
-            theo = self._expected_fair_value(spot, strike, tte_years)
-            edge = option_mid - theo
+            if underlying_signal > 0 and buy_left > 0:
+                size = min(size, buy_left)
 
-            edge_mean = self._ema(f"{option_symbol}_edge_mean", 24, edge)
-            edge_dev = self._ema(f"{option_symbol}_edge_dev", 80, abs(edge - edge_mean))
-            dynamic_open = self.edge_open + 0.2 * edge_dev
+                # Aggressive, but only on strong signal
+                orders.setdefault(symbol, []).append(Order(symbol, best_ask, size))
 
-            # Mean-reversion around smile-theo edge with conservative size scaling.
-            if edge >= dynamic_open and sell_left > 0:
-                raw_size = int(min(self.max_order_size, 8 + 6 * (edge - dynamic_open)))
-                size = min(raw_size, sell_left)
-                if size > 0:
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
+            elif underlying_signal < 0 and sell_left > 0:
+                size = min(size, sell_left)
 
-            elif edge <= -dynamic_open and buy_left > 0:
-                raw_size = int(min(self.max_order_size, 8 + 6 * (-edge - dynamic_open)))
-                size = min(raw_size, buy_left)
-                if size > 0:
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
+                # Short calls when informed flow is bearish
+                orders.setdefault(symbol, []).append(Order(symbol, best_bid, -size))
 
-            # Close toward flat when mispricing fades.
-            if abs(edge) <= self.edge_close:
-                if position > 0:
-                    size = min(position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
-                elif position < 0:
-                    size = min(-position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
-
-        return orders_by_symbol, 0
+        return orders
 
     def save(self) -> JSON:
         return {
@@ -542,11 +502,10 @@ class Trader:
                 inventory_skew=0.07,
                 take_edge=1.0,
             ),
-            #"OPTIONS_PORTFOLIO": OptionSmilePortfolio(
-            #    underlying_symbol=OPTION_UNDERLYING_SYMBOL,
-            #    option_limit=self.limits["VELVETFRUIT_EXTRACT_VOUCHER"],
-            #),
         }
+
+        self.option_insider = InsiderOptionFollower(
+            option_limit=self.limits["VELVETFRUIT_EXTRACT_VOUCHER"])
 
     def _limit_for_symbol(self, symbol: Symbol) -> int:
         if symbol in self.limits:
@@ -560,12 +519,14 @@ class Trader:
         return state.position.get(symbol, 0) + pending
 
     def _extract_informed_flow_signal(self, state: TradingState) -> dict[Symbol, float]:
-        if not self.informed_trader_names:
-            return {}
-
         signal_by_symbol: dict[Symbol, float] = {}
 
         for symbol, trades in state.market_trades.items():
+
+            # ONLY look at VEV options
+            if not symbol.startswith(OPTION_PREFIX):
+                continue
+
             if symbol not in state.order_depths:
                 continue
 
@@ -578,40 +539,36 @@ class Trader:
             mid = (best_bid + best_ask) / 2.0
 
             raw_score = 0.0
-            total_informed_qty = 0
+            total_qty = 0
 
             for trade in trades:
                 if trade.buyer not in self.informed_trader_names and trade.seller not in self.informed_trader_names:
                     continue
 
                 qty = int(trade.quantity)
-                total_informed_qty += qty
+                total_qty += qty
 
-                # Buyer is informed: bullish, but stronger if bought above/near mid
                 if trade.buyer in self.informed_trader_names:
-                    price_edge = trade.price - mid
-                    raw_score += qty * max(0.5, 1.0 + price_edge / 2.0)
+                    raw_score += qty
 
-                # Seller is informed: bearish, but stronger if sold below/near mid
                 if trade.seller in self.informed_trader_names:
-                    price_edge = mid - trade.price
-                    raw_score -= qty * max(0.5, 1.0 + price_edge / 2.0)
+                    raw_score -= qty
 
-            if total_informed_qty == 0:
-                current_signal = 0.0
-            else:
-                current_signal = raw_score / max(1.0, total_informed_qty)
+            if total_qty == 0:
+                continue
+
+            score = raw_score / total_qty
 
             prev = self.informed_flow_memory.get(symbol, 0.0)
-            smoothed = self.informed_flow_decay * prev + current_signal
+            smoothed = 0.6 * prev + score
             self.informed_flow_memory[symbol] = smoothed
 
-            if abs(smoothed) >= self.informed_signal_threshold:
+            if abs(smoothed) >= 1.5:
                 signal_by_symbol[symbol] = smoothed
 
         return signal_by_symbol
 
-    def _apply_informed_overlay(
+    """def _apply_informed_overlay(
         self,
         state: TradingState,
         orders: dict[Symbol, list[Order]],
@@ -646,7 +603,7 @@ class Trader:
                 best_bid = max(depth.buy_orders.keys())
                 size = min(desired_size, sell_left)
                 if size > 0:
-                    orders.setdefault(symbol, []).append(Order(symbol, best_bid, -size))
+                    orders.setdefault(symbol, []).append(Order(symbol, best_bid, -size))"""
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         old_trader_data = json.loads(state.traderData) if state.traderData else {}
@@ -674,7 +631,19 @@ class Trader:
                 new_trader_data[strategy_key] = strategy.save()
 
         signal_by_symbol = self._extract_informed_flow_signal(state)
-        self._apply_informed_overlay(state, orders, signal_by_symbol)
+
+        option_orders = {}
+
+        for option_symbol, signal in signal_by_symbol.items():
+            partial_orders = self.option_insider.run_single_option(state, option_symbol, signal)
+
+            for s, o in partial_orders.items():
+                option_orders.setdefault(s, []).extend(o)
+
+        for symbol, symbol_orders in option_orders.items():
+            if symbol_orders:
+                orders.setdefault(symbol, []).extend(symbol_orders)
+
         if signal_by_symbol:
             logger.print("Informed flow signals:", signal_by_symbol)
 

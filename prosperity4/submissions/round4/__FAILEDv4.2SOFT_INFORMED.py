@@ -1,4 +1,4 @@
-#FROM v4.11
+#FROM v4.1 - doesn't fight the spread, less aggressive parameters, not on hydrogel anymore
 #PnL: TBD
 import json
 import math
@@ -515,13 +515,17 @@ class Trader:
         }
 
         # Names come from the trades CSV buyer/seller columns (e.g. "Mark 01").
-        self.informed_trader_names = []
-        self.informed_base_order_size = 20
-        self.informed_size_per_lot = 8
-        self.informed_max_order_size = 60
+        self.informed_trader_names = ["Mark 14"]
+
+        # Safer signal settings
         self.informed_flow_memory: dict[Symbol, float] = {}
-        self.informed_flow_decay = 0.80
-        self.informed_signal_threshold = 2.0
+        self.informed_flow_decay = 0.55
+        self.informed_signal_threshold = 3.5
+
+        # Overlay is now small and conservative
+        self.informed_max_position_fraction = 0.45
+        self.informed_max_order_size = 12
+        self.informed_quote_offset = 1
 
         self.strategies: dict[str, Any] = {
             "HYDROGEL_PACK": AnchoredMarketMaker(
@@ -615,12 +619,25 @@ class Trader:
         self,
         state: TradingState,
         orders: dict[Symbol, list[Order]],
-        signal_by_symbol: dict[Symbol, int],
+        signal_by_symbol: dict[Symbol, float],
     ) -> None:
-        for symbol, score in sorted(signal_by_symbol.items(), key=lambda item: abs(item[1]), reverse=True):
+        """
+        Safer informed-trader overlay.
+
+        Key changes:
+        - Does NOT blindly buy best ask / sell best bid.
+        - Does NOT use huge size.
+        - Does NOT allow position to exceed a conservative fraction of the limit.
+        - Places passive/improving quotes instead of aggressive market-taking orders.
+        """
+
+        for symbol, score in signal_by_symbol.items():
+            if symbol != "VELVETFRUIT_EXTRACT":
+                continue
             limit = self._limit_for_symbol(symbol)
             if limit <= 0:
                 continue
+
             if symbol not in state.order_depths:
                 continue
 
@@ -628,25 +645,58 @@ class Trader:
             if not depth.buy_orders or not depth.sell_orders:
                 continue
 
+            best_bid = max(depth.buy_orders.keys())
+            best_ask = min(depth.sell_orders.keys())
+
             projected_position = self._projected_position(state, orders, symbol)
-            buy_left = limit - projected_position
-            sell_left = limit + projected_position
-            desired_size = min(
+
+            max_overlay_position = int(limit * self.informed_max_position_fraction)
+
+            # Do not let insider overlay push us too far from flat
+            if abs(projected_position) >= max_overlay_position:
+                continue
+
+            remaining_safe_capacity = max_overlay_position - abs(projected_position)
+            if remaining_safe_capacity <= 0:
+                continue
+
+            # Small size only
+            size = min(
                 self.informed_max_order_size,
-                int(self.informed_base_order_size + self.informed_size_per_lot * abs(score)),
+                remaining_safe_capacity,
+                int(3 + 2 * abs(score)),
             )
 
-            if score > 0 and buy_left > 0:
-                best_ask = min(depth.sell_orders.keys())
-                size = min(desired_size, buy_left)
-                if size > 0:
-                    orders.setdefault(symbol, []).append(Order(symbol, best_ask, size))
+            if size <= 0:
+                continue
 
-            elif score < 0 < sell_left:
-                best_bid = max(depth.buy_orders.keys())
-                size = min(desired_size, sell_left)
-                if size > 0:
-                    orders.setdefault(symbol, []).append(Order(symbol, best_bid, -size))
+            # Bullish signal: place passive/improved buy, do NOT cross best ask
+            if score > 0:
+                buy_left = limit - projected_position
+                if buy_left <= 0:
+                    continue
+
+                size = min(size, buy_left)
+
+                # Improve bid by 1 tick, but never cross the spread
+                price = min(best_bid + self.informed_quote_offset, best_ask - 1)
+
+                if best_bid < price < best_ask:
+                    orders.setdefault(symbol, []).append(Order(symbol, price, size))
+
+            # Bearish signal: place passive/improved sell, do NOT cross best bid
+            elif score < 0:
+                sell_left = limit + projected_position
+                if sell_left <= 0:
+                    continue
+
+                size = min(size, sell_left)
+
+                # Improve ask by 1 tick, but never cross the spread
+                price = max(best_ask - self.informed_quote_offset, best_bid + 1)
+
+                if best_ask > price > best_bid:
+                    orders.setdefault(symbol, []).append(Order(symbol, price, -size))
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         old_trader_data = json.loads(state.traderData) if state.traderData else {}
