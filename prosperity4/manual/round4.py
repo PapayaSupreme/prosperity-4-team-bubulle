@@ -130,21 +130,46 @@ def fair_value(payoffs: np.ndarray) -> float:
     return float(np.mean(payoffs))
 
 
-def summarize_product(name: str, fair: float, bid: float, ask: float, max_volume: int):
+def _expected_pnl_samples(payoffs: np.ndarray, entry_price: float, side: str) -> np.ndarray:
+    """Per-simulation PnL for one contract before volume scaling."""
+    if side == "BUY":
+        return (payoffs - entry_price) * CONTRACT_SIZE
+    if side == "SELL":
+        return (entry_price - payoffs) * CONTRACT_SIZE
+    return np.zeros_like(payoffs, dtype=float)
+
+
+def _sharpe_from_samples(pnl_samples: np.ndarray) -> float:
+    """Cross-simulation Sharpe (mean/std) without annualization."""
+    std = float(np.std(pnl_samples))
+    if std <= 1e-12:
+        return 0.0
+    return float(np.mean(pnl_samples) / std)
+
+
+def summarize_product(name: str, payoffs: np.ndarray, bid: float, ask: float, max_volume: int):
+    fair = fair_value(payoffs)
     buy_edge = fair - ask
     sell_edge = bid - fair
 
     if buy_edge > sell_edge and buy_edge > 0:
         action = "BUY"
         edge = buy_edge
+        unit_pnl_samples = _expected_pnl_samples(payoffs, ask, side="BUY")
     elif sell_edge > 0:
         action = "SELL"
         edge = sell_edge
+        unit_pnl_samples = _expected_pnl_samples(payoffs, bid, side="SELL")
     else:
         action = "NO TRADE"
         edge = 0.0
+        unit_pnl_samples = np.zeros_like(payoffs, dtype=float)
 
-    expected_pnl = edge * max_volume * CONTRACT_SIZE
+    volume = max_volume if action != "NO TRADE" else 0
+    total_pnl_samples = unit_pnl_samples * volume
+    expected_pnl = float(np.mean(total_pnl_samples))
+    pnl_std = float(np.std(total_pnl_samples))
+    sharpe = _sharpe_from_samples(total_pnl_samples)
 
     return {
         "product": name,
@@ -152,9 +177,11 @@ def summarize_product(name: str, fair: float, bid: float, ask: float, max_volume
         "bid": bid,
         "ask": ask,
         "action": action,
-        "volume": max_volume if action != "NO TRADE" else 0,
+        "volume": volume,
         "edge_per_unit": edge,
         "expected_pnl": expected_pnl,
+        "pnl_std": pnl_std,
+        "sharpe": sharpe,
     }
 
 
@@ -180,7 +207,7 @@ def run_analysis():
     products.append(
         summarize_product(
             name="AC",
-            fair=S0,
+            payoffs=np.full(N_SIMS, S0),
             bid=49.975,
             ask=50.025,
             max_volume=200,
@@ -193,7 +220,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_50_P",
-            fair_value(put_payoff(ST_3w, 50)),
+            put_payoff(ST_3w, 50),
             bid=12.00,
             ask=12.05,
             max_volume=50,
@@ -203,7 +230,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_50_C",
-            fair_value(call_payoff(ST_3w, 50)),
+            call_payoff(ST_3w, 50),
             bid=12.00,
             ask=12.05,
             max_volume=50,
@@ -213,7 +240,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_35_P",
-            fair_value(put_payoff(ST_3w, 35)),
+            put_payoff(ST_3w, 35),
             bid=4.33,
             ask=4.35,
             max_volume=50,
@@ -223,7 +250,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_40_P",
-            fair_value(put_payoff(ST_3w, 40)),
+            put_payoff(ST_3w, 40),
             bid=6.50,
             ask=6.55,
             max_volume=50,
@@ -233,7 +260,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_45_P",
-            fair_value(put_payoff(ST_3w, 45)),
+            put_payoff(ST_3w, 45),
             bid=9.05,
             ask=9.10,
             max_volume=50,
@@ -243,7 +270,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_60_C",
-            fair_value(call_payoff(ST_3w, 60)),
+            call_payoff(ST_3w, 60),
             bid=8.80,
             ask=8.85,
             max_volume=50,
@@ -256,7 +283,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_50_P_2",
-            fair_value(put_payoff(ST_2w, 50)),
+            put_payoff(ST_2w, 50),
             bid=9.70,
             ask=9.75,
             max_volume=50,
@@ -266,7 +293,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_50_C_2",
-            fair_value(call_payoff(ST_2w, 50)),
+            call_payoff(ST_2w, 50),
             bid=9.70,
             ask=9.75,
             max_volume=50,
@@ -279,7 +306,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_50_CO",
-            fair_value(chooser_payoff(paths_3w, K=50, choose_step=steps_2w)),
+            chooser_payoff(paths_3w, K=50, choose_step=steps_2w),
             bid=22.20,
             ask=22.30,
             max_volume=50,
@@ -294,7 +321,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_40_BP",
-            fair_value(binary_put_payoff(ST_3w, K=40, payout=BINARY_PAYOUT)),
+            binary_put_payoff(ST_3w, K=40, payout=BINARY_PAYOUT),
             bid=5.00,
             ask=5.10,
             max_volume=50,
@@ -310,7 +337,7 @@ def run_analysis():
     products.append(
         summarize_product(
             "AC_45_KO",
-            fair_value(knockout_put_payoff(paths_3w, K=45, barrier=35)),
+            knockout_put_payoff(paths_3w, K=45, barrier=35),
             bid=0.15,
             ask=0.175,
             max_volume=500,
@@ -328,7 +355,9 @@ def run_analysis():
             f"{p['action']:8s} | "
             f"vol={p['volume']:4d} | "
             f"edge={p['edge_per_unit']:8.4f} | "
-            f"EV PnL={p['expected_pnl']:10.2f}"
+            f"EV PnL={p['expected_pnl']:10.2f} | "
+            f"Std={p['pnl_std']:10.2f} | "
+            f"Sharpe={p['sharpe']:7.3f}"
         )
 
 
