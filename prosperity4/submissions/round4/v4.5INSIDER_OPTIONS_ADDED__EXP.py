@@ -159,6 +159,7 @@ OPTION_UNDERLYING_SYMBOL = "VELVETFRUIT_EXTRACT"
 OPTION_PREFIX = "VEV_"
 
 # Insider trading detection
+INFORMED_TRADER_ID = "Mark 14"
 LONG, NEUTRAL, SHORT = 1, 0, -1
 
 
@@ -401,10 +402,13 @@ class AnchoredMarketMaker(StatefulStrategy):
 class OptionSmilePortfolio(StatefulStrategy):
     """Trade all VEV vouchers off a fitted IV smile with expiry-aware unwinds."""
 
-    def __init__(self, underlying_symbol: Symbol, option_limit: int) -> None:
+    def __init__(self, underlying_symbol: Symbol, option_limit: int, informed_trader_id: str) -> None:
         super().__init__(underlying_symbol, limit=200)
         self.option_limit = option_limit
+        self.informed_trader_id = informed_trader_id
         self.ema_store: dict[str, float] = {}
+        self.option_signals: dict[str, list[int]] = {}
+        self.follow_window = 500
 
         # Smile fit: iv = 3.000615 * m^2 + 1.171123 * m + 0.254329
         self.smile_a = 3.000615
@@ -435,7 +439,7 @@ class OptionSmilePortfolio(StatefulStrategy):
         except (ValueError, IndexError):
             return None
 
-    def _book_mid(self, state: TradingState, symbol: Symbol) -> tuple[float | None, int | None, int | None]:
+    def _book_mid(self, state: TradingState, symbol: Symbol) -> tuple[int | None, int | None, int | None]:
         if symbol not in state.order_depths:
             return None, None, None
 
@@ -447,10 +451,10 @@ class OptionSmilePortfolio(StatefulStrategy):
         best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else None
 
         if best_bid is not None and best_ask is not None:
-            return (best_bid + best_ask) / 2.0, best_bid, best_ask
+            return int(round((best_bid + best_ask) / 2.0)), best_bid, best_ask
         if best_ask is not None:
-            return best_ask - 0.5, best_ask - 1, best_ask
-        return best_bid + 0.5, best_bid, best_bid + 1
+            return best_ask, best_ask - 1, best_ask
+        return best_bid, best_bid, best_bid + 1
 
     def _norm_cdf(self, x: float) -> float:
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -488,76 +492,73 @@ class OptionSmilePortfolio(StatefulStrategy):
         self.ema_store[key] = current
         return current
 
+    def _update_mark14_option_signals(self, state: TradingState) -> None:
+        if not self.informed_trader_id:
+            return
+
+        for symbol, trades in state.market_trades.items():
+            if not symbol.startswith(OPTION_PREFIX):
+                continue
+
+            for trade in trades:
+                if trade.buyer == self.informed_trader_id:
+                    self.option_signals[symbol] = [trade.timestamp, LONG, trade.quantity]
+                elif trade.seller == self.informed_trader_id:
+                    self.option_signals[symbol] = [trade.timestamp, SHORT, trade.quantity]
+
+    def _get_active_option_signal(self, symbol: Symbol, timestamp: int) -> tuple[int, int]:
+        signal = self.option_signals.get(symbol)
+        if not signal or len(signal) != 3:
+            return NEUTRAL, 0
+
+        last_ts, direction, quantity = signal
+
+        if timestamp - last_ts > self.follow_window:
+            return NEUTRAL, 0
+
+        if direction in (LONG, SHORT):
+            return direction, quantity
+
+        return NEUTRAL, 0
+
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int]:
         orders_by_symbol: dict[Symbol, list[Order]] = {}
 
-        spot, _, _ = self._book_mid(state, self.symbol)
-        if spot is None:
-            return orders_by_symbol, 0
+        self._update_mark14_option_signals(state)
 
-        tte_years = self._time_to_expiry(state.timestamp)
         option_symbols = self._discover_option_symbols(state)
         if not option_symbols:
             return orders_by_symbol, 0
 
-        unwind_mode = state.timestamp >= self.unwind_start_timestamp
-
         for option_symbol in option_symbols:
-            strike = self._extract_strike(option_symbol)
-            if strike is None:
+            _, best_bid, best_ask = self._book_mid(state, option_symbol)
+            if best_bid is None or best_ask is None:
                 continue
 
-            option_mid, best_bid, best_ask = self._book_mid(state, option_symbol)
-            if option_mid is None or best_bid is None or best_ask is None:
+            signal, mark_size = self._get_active_option_signal(option_symbol, state.timestamp)
+            if signal == NEUTRAL or mark_size <= 0:
                 continue
 
             position = state.position.get(option_symbol, 0)
             buy_left = self.option_limit - position
             sell_left = self.option_limit + position
 
-            if unwind_mode:
-                if position > 0:
-                    size = min(position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
-                elif position < 0:
-                    size = min(-position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
-                continue
+            if signal == LONG and buy_left > 0:
+                size = min(mark_size, buy_left)
+                self_orders = orders_by_symbol.setdefault(option_symbol, [])
+                self_orders.append(Order(option_symbol, best_ask, size))
 
-            theo = self._expected_fair_value(spot, strike, tte_years)
-            edge = option_mid - theo
-
-            edge_mean = self._ema(f"{option_symbol}_edge_mean", 24, edge)
-            edge_dev = self._ema(f"{option_symbol}_edge_dev", 80, abs(edge - edge_mean))
-            dynamic_open = self.edge_open + 0.2 * edge_dev
-
-            # Mean-reversion around smile-theo edge with conservative size scaling.
-            if edge >= dynamic_open and sell_left > 0:
-                raw_size = int(min(self.max_order_size, 8 + 6 * (edge - dynamic_open)))
-                size = min(raw_size, sell_left)
-                if size > 0:
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
-
-            elif edge <= -dynamic_open and buy_left > 0:
-                raw_size = int(min(self.max_order_size, 8 + 6 * (-edge - dynamic_open)))
-                size = min(raw_size, buy_left)
-                if size > 0:
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
-
-            # Close toward flat when mispricing fades.
-            if abs(edge) <= self.edge_close:
-                if position > 0:
-                    size = min(position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_bid, -size))
-                elif position < 0:
-                    size = min(-position, self.max_order_size)
-                    orders_by_symbol.setdefault(option_symbol, []).append(Order(option_symbol, best_ask, size))
+            elif signal == SHORT and sell_left > 0:
+                size = min(mark_size, sell_left)
+                self_orders = orders_by_symbol.setdefault(option_symbol, [])
+                self_orders.append(Order(option_symbol, best_bid, -size))
 
         return orders_by_symbol, 0
 
     def save(self) -> JSON:
         return {
             "ema_store": self.ema_store,
+            "option_signals": self.option_signals,
         }
 
     def load(self, data: JSON) -> None:
@@ -571,6 +572,17 @@ class OptionSmilePortfolio(StatefulStrategy):
                 if isinstance(key, str) and isinstance(value, (int, float)):
                     loaded[key] = float(value)
             self.ema_store = loaded
+
+        option_signals = data.get("option_signals")
+        if isinstance(option_signals, dict):
+            loaded: dict[str, list[int]] = {}
+            for key, value in option_signals.items():
+                if not isinstance(key, str) or not isinstance(value, list) or len(value) != 2:
+                    continue
+                ts, direction = value
+                if isinstance(ts, (int, float)) and isinstance(direction, (int, float)):
+                    loaded[key] = [int(ts), int(direction)]
+            self.option_signals = loaded
 
 
 class Trader:
@@ -607,10 +619,11 @@ class Trader:
                 take_edge=1.0,
                 informed_trader_id="Mark 67",
             ),
-            #"OPTIONS_PORTFOLIO": OptionSmilePortfolio(
-            #    underlying_symbol=OPTION_UNDERLYING_SYMBOL,
-            #    option_limit=self.limits["VELVETFRUIT_EXTRACT_VOUCHER"],
-            #),
+            "OPTIONS_PORTFOLIO": OptionSmilePortfolio(
+                underlying_symbol=OPTION_UNDERLYING_SYMBOL,
+                option_limit=self.limits["VELVETFRUIT_EXTRACT_VOUCHER"],
+                informed_trader_id=INFORMED_TRADER_ID,
+            ),
         }
 
 
