@@ -25,6 +25,9 @@ def _round4_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "ROUND_4"
 
 
+def _round5_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "ROUND_5"
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     return cast(pd.DataFrame, pd.read_csv(path, sep=";"))
@@ -144,6 +147,48 @@ def read_all_round3_trades() -> pd.DataFrame:
 def read_all_round4_prices() -> pd.DataFrame:
     base = _round4_dir()
     frames: list[pd.DataFrame] = [_read_csv(path) for path in sorted(base.glob("prices_round_4_day_*.csv"))]
+    if not frames:
+        return pd.DataFrame()
+    return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+
+def read_all_round4_trades() -> pd.DataFrame:
+    base = _round4_dir()
+    frames: list[pd.DataFrame] = []
+    for path in sorted(base.glob("trades_round_4_day_*.csv")):
+        frame = _read_csv(path)
+        # Trades files do not carry day in schema, so derive it from filename.
+        day = int(path.stem.split("day_")[-1])
+        frame["day"] = day
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame()
+    return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+
+
+def read_round5_prices(day: int) -> pd.DataFrame:
+    path = _round5_dir() / f"prices_round_5_day_{day}.csv"
+    return _read_csv(path)
+
+def read_round5_trades(day: int) -> pd.DataFrame:
+    path = _round5_dir() / f"trades_round_5_day_{day}.csv"
+    return _read_csv(path)
+
+def read_all_round5_prices() -> pd.DataFrame:
+    base = _round5_dir()
+    frames: list[pd.DataFrame] = [_read_csv(path) for path in sorted(base.glob("prices_round_5_day_*.csv"))]
+    if not frames:
+        return pd.DataFrame()
+    return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+
+def read_all_round5_trades() -> pd.DataFrame:
+    base = _round5_dir()
+    frames: list[pd.DataFrame] = []
+    for path in sorted(base.glob("trades_round_5_day_*.csv")):
+        frame = _read_csv(path)
+        # Trades files do not carry day in schema, so derive it from filename.
+        day = int(path.stem.split("day_")[-1])
+        frame["day"] = day
+        frames.append(frame)
     if not frames:
         return pd.DataFrame()
     return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
