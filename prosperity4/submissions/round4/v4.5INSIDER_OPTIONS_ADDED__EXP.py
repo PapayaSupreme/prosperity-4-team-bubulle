@@ -1,4 +1,4 @@
-#FROM v4.11
+#FROM v4.5 - implement VEV_4000 coupon trading only when Mark 14 does
 #PnL: 7 930
 import json
 import math
@@ -159,7 +159,6 @@ OPTION_UNDERLYING_SYMBOL = "VELVETFRUIT_EXTRACT"
 OPTION_PREFIX = "VEV_"
 
 # Insider trading detection
-INFORMED_TRADER_ID = "Mark 14"
 LONG, NEUTRAL, SHORT = 1, 0, -1
 
 
@@ -232,7 +231,7 @@ class AnchoredMarketMaker(StatefulStrategy):
         residual_alpha: float,
         inventory_skew: float,
         take_edge: float,
-        enable_informed: bool = False,
+        informed_trader_id: str,
     ) -> None:
         super().__init__(symbol, limit)
         self.anchor = anchor
@@ -240,7 +239,7 @@ class AnchoredMarketMaker(StatefulStrategy):
         self.residual_alpha = residual_alpha
         self.inventory_skew = inventory_skew
         self.take_edge = take_edge
-        self.enable_informed = enable_informed
+        self.informed_trader_id = informed_trader_id
 
         self.ema_mid: float | None = None
         self.fair_value: float | None = None
@@ -248,6 +247,9 @@ class AnchoredMarketMaker(StatefulStrategy):
         self.informed_bought_ts: int | None = None
         self.informed_sold_ts: int | None = None
         self.informed_window: int = 500  # react for 500 timestamps after informed trade
+        # Anti-informed (negatively correlated) trader timestamps
+        self.anti_bought_ts: int | None = None
+        self.anti_sold_ts: int | None = None
 
     def _estimate_fair_value(self, mid: float) -> float:
         if self.ema_mid is None:
@@ -260,35 +262,36 @@ class AnchoredMarketMaker(StatefulStrategy):
         return mid - self.residual_alpha * residual
 
     def _check_for_informed(self, state: TradingState) -> None:
-        """Update informed trader direction based on recent trades (hedgehogs-style)."""
-        if not self.enable_informed:
+        """Update informed trader direction based on recent trades."""
+        if self.informed_trader_id == "":
             return
-
         trades = state.market_trades.get(self.symbol, []) + state.own_trades.get(self.symbol, [])
 
         for trade in trades:
-            if trade.buyer == INFORMED_TRADER_ID:
+            # Primary informed trader
+            if trade.buyer == self.informed_trader_id:
                 self.informed_bought_ts = trade.timestamp
-            if trade.seller == INFORMED_TRADER_ID:
+            if trade.seller == self.informed_trader_id:
                 self.informed_sold_ts = trade.timestamp
 
-        # Determine direction based on last action
-        if self.informed_bought_ts is None and self.informed_sold_ts is None:
-            self.informed_direction = NEUTRAL
-        elif self.informed_bought_ts is None:
-            self.informed_direction = SHORT
-        elif self.informed_sold_ts is None:
-            self.informed_direction = LONG
-        elif self.informed_bought_ts and self.informed_sold_ts:
-            if self.informed_sold_ts > self.informed_bought_ts:
+        # If any primary informed actions present, prefer them
+        if self.informed_bought_ts is not None or self.informed_sold_ts is not None:
+            if self.informed_bought_ts is None and self.informed_sold_ts is None:
+                self.informed_direction = NEUTRAL
+            elif self.informed_bought_ts is None:
                 self.informed_direction = SHORT
-            elif self.informed_bought_ts > self.informed_sold_ts:
+            elif self.informed_sold_ts is None:
                 self.informed_direction = LONG
             else:
-                self.informed_direction = NEUTRAL
+                if self.informed_sold_ts > self.informed_bought_ts:
+                    self.informed_direction = SHORT
+                elif self.informed_bought_ts > self.informed_sold_ts:
+                    self.informed_direction = LONG
+                else:
+                    self.informed_direction = NEUTRAL
 
     def act(self, state: TradingState) -> None:
-        if self.enable_informed:
+        if self.informed_trader_id != "":
             self._check_for_informed(state)
 
         buy_orders, sell_orders = self._get_sorted_orders(state)
@@ -311,10 +314,10 @@ class AnchoredMarketMaker(StatefulStrategy):
         reservation = fair - self.inventory_skew * position + 1.2 * imbalance
 
         # Informed trading boost: adjust reservation based on informed direction
-        if self.enable_informed and self.informed_direction == LONG:
+        if self.informed_trader_id != "" and self.informed_direction == LONG:
             if self.informed_bought_ts is not None and self.informed_bought_ts + self.informed_window >= state.timestamp:
                 reservation -= 2.0  # Boost to buy more aggressively
-        elif self.enable_informed and self.informed_direction == SHORT:
+        elif self.informed_trader_id != "" and self.informed_direction == SHORT:
             if self.informed_sold_ts is not None and self.informed_sold_ts + self.informed_window >= state.timestamp:
                 reservation += 2.0  # Boost to sell more aggressively
 
@@ -362,6 +365,8 @@ class AnchoredMarketMaker(StatefulStrategy):
             "fair_value": self.fair_value,
             "informed_bought_ts": self.informed_bought_ts,
             "informed_sold_ts": self.informed_sold_ts,
+            "anti_bought_ts": self.anti_bought_ts,
+            "anti_sold_ts": self.anti_sold_ts,
         }
 
     def load(self, data: JSON) -> None:
@@ -383,6 +388,14 @@ class AnchoredMarketMaker(StatefulStrategy):
         informed_sold_ts = data.get("informed_sold_ts")
         if informed_sold_ts is not None and isinstance(informed_sold_ts, (int, float)):
             self.informed_sold_ts = int(informed_sold_ts)
+
+        anti_bought_ts = data.get("anti_bought_ts")
+        if anti_bought_ts is not None and isinstance(anti_bought_ts, (int, float)):
+            self.anti_bought_ts = int(anti_bought_ts)
+
+        anti_sold_ts = data.get("anti_sold_ts")
+        if anti_sold_ts is not None and isinstance(anti_sold_ts, (int, float)):
+            self.anti_sold_ts = int(anti_sold_ts)
 
 
 class OptionSmilePortfolio(StatefulStrategy):
@@ -582,7 +595,7 @@ class Trader:
                 residual_alpha=0.30,
                 inventory_skew=0.08,
                 take_edge=1.0,
-                enable_informed=True,
+                informed_trader_id="Mark 14",
             ),
             "VELVETFRUIT_EXTRACT": AnchoredMarketMaker(
                 symbol="VELVETFRUIT_EXTRACT",
@@ -592,7 +605,7 @@ class Trader:
                 residual_alpha=0.33,
                 inventory_skew=0.07,
                 take_edge=1.0,
-                enable_informed=False,
+                informed_trader_id="Mark 67",
             ),
             #"OPTIONS_PORTFOLIO": OptionSmilePortfolio(
             #    underlying_symbol=OPTION_UNDERLYING_SYMBOL,
