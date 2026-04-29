@@ -505,6 +505,8 @@ class ClassifierStrategy(StatefulStrategy):
     CLASSIFY_WINDOW = 100
     MIN_OBSERVE_TICKS = 70
     CONFIRM_TICKS = 8
+    SWITCH_MARGIN = 0.08
+    MIN_CONFIRM_CONFIDENCE = 0.55
 
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
@@ -664,7 +666,7 @@ class ClassifierStrategy(StatefulStrategy):
     def _set_candidate(self, mode: str, confidence: float) -> None:
         if self.candidate_mode == mode:
             self.candidate_count += 1
-            self.candidate_confidence = max(self.candidate_confidence, confidence)
+            self.candidate_confidence = confidence
         else:
             self.candidate_mode = mode
             self.candidate_count = 1
@@ -721,7 +723,19 @@ class ClassifierStrategy(StatefulStrategy):
 
         if passed:
             mode, confidence = max(passed, key=lambda x: x[1])
-            self._set_candidate(mode, confidence)
+            passed_scores = {m: c for m, c in passed}
+
+            # Hysteresis: avoid switching away from current candidate unless new mode wins by margin.
+            if self.candidate_mode in passed_scores and self.candidate_mode != mode:
+                current_conf = passed_scores[self.candidate_mode]
+                if confidence < current_conf + self.SWITCH_MARGIN:
+                    mode = self.candidate_mode
+                    confidence = current_conf
+
+            if confidence >= self.MIN_CONFIRM_CONFIDENCE:
+                self._set_candidate(mode, confidence)
+            else:
+                self._set_candidate("DISABLED", 0.0)
         else:
             self._set_candidate("DISABLED", 0.0)
 
