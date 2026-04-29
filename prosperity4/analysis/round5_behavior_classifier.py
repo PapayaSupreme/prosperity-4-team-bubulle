@@ -35,14 +35,25 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 
+from prosperity4.analysis.data import read_all_round5_prices, read_all_round5_trades
 
-PRICE_GLOB = "prices_round_5_day_*.csv"
-TRADE_GLOB = "trades_round_5_day_*.csv"
+
+def _round5_data_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "ROUND_5"
+
+
+def load_round5_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load ROUND_5 data using the same shared helpers as `round5_analysis.py`."""
+
+    prices = read_all_round5_prices()
+    trades = read_all_round5_trades()
+    if prices.empty:
+        raise FileNotFoundError(f"No ROUND_5 price data found in {_round5_data_dir()}")
+    return prices, trades
 
 
 @dataclass
@@ -94,25 +105,6 @@ class ProductBehavior:
     avg_trade_qty: float | None
 
     notes: str
-
-
-def _read_csvs(paths: Iterable[Path]) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for path in sorted(paths):
-        try:
-            df = pd.read_csv(path, sep=";")
-            frames.append(df)
-        except Exception as exc:
-            print(f"WARNING: failed to read {path}: {exc}")
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
-
-def load_round5_data(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    prices = _read_csvs(data_dir.glob(PRICE_GLOB))
-    trades = _read_csvs(data_dir.glob(TRADE_GLOB))
-    if prices.empty:
-        raise FileNotFoundError(f"No files matching {PRICE_GLOB} in {data_dir}")
-    return prices, trades
 
 
 def build_market_frame(prices: pd.DataFrame) -> pd.DataFrame:
@@ -222,7 +214,48 @@ def classify_product(prod: pd.DataFrame, trades: pd.DataFrame) -> ProductBehavio
     n = len(prod)
 
     if n == 0:
-        return ProductBehavior(product, "BAD_LIQUIDITY", 0.0, "do_not_trade", 0, 0, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, 0, 0.0, None, "no valid mid prices")
+        return ProductBehavior(
+            product=product,
+            behavior_class="BAD_LIQUIDITY",
+            confidence=0.0,
+            strategy_hint="do_not_trade",
+            n_points=0,
+            n_days=0,
+            first_mid=None,
+            last_mid=None,
+            mean_mid=None,
+            median_mid=None,
+            std_mid=None,
+            min_mid=None,
+            max_mid=None,
+            range_mid=None,
+            range_pct=None,
+            mean_spread=None,
+            median_spread=None,
+            spread_pct=None,
+            mean_top_depth=None,
+            missing_book_pct=None,
+            total_change=None,
+            total_change_pct=None,
+            slope_per_tick=None,
+            slope_per_100=None,
+            r2_linear=None,
+            return_std=None,
+            diff_std=None,
+            diff_mean=None,
+            lag1_return_autocorr=None,
+            residual_lag1_autocorr=None,
+            median_crosses=None,
+            median_cross_rate=None,
+            mean_reversion_half_life_ticks=None,
+            jump_count=None,
+            jump_rate=None,
+            max_abs_jump=None,
+            num_trades=0,
+            total_trade_volume=0.0,
+            avg_trade_qty=None,
+            notes="no valid mid prices",
+        )
 
     y = prod["mid"].to_numpy(dtype=float)
     t = prod["global_time"].to_numpy(dtype=float)
@@ -457,15 +490,13 @@ def write_summary(df: pd.DataFrame, path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--out-dir", type=Path, default=None)
     args = parser.parse_args()
 
-    data_dir = args.data_dir.resolve()
-    out_dir = (args.out_dir or data_dir).resolve()
+    out_dir = (args.out_dir or _round5_data_dir()).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    prices, trades = load_round5_data(data_dir)
+    prices, trades = load_round5_data()
     result = classify_all(prices, trades)
 
     csv_path = out_dir / "round5_product_behavior_classes.csv"

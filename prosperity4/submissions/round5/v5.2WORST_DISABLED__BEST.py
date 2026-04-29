@@ -1,4 +1,7 @@
 #FROM v3.7, v3.9, v3.10 - clean slate of hardcoded product trading
+
+# PnL : 19 306
+
 import json
 import math
 import statistics
@@ -813,9 +816,17 @@ class Trader:
             return {}
 
     def _get_symbols_to_trade(self, state: TradingState) -> list[Symbol]:
-        # Prefer listings order when available, otherwise fall back to order_depths order.
         symbols = list(state.listings.keys()) if state.listings else list(state.order_depths.keys())
         symbols = [s for s in symbols if s in state.order_depths]
+
+        # 🚫 FILTER HERE
+        blacklist = ["SLEEP_POD", "PEBBLES", "GALAXY_SOUNDS"]
+
+        symbols = [
+            s for s in symbols
+            if not any(bad in s for bad in blacklist)
+        ]
+
         return symbols[: self.MAX_PRODUCTS]
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:

@@ -1,0 +1,41 @@
+ROUND 5 PRODUCT BEHAVIOR CLASSIFICATION
+================================================================================
+
+Class counts:
+  JUMPY_UNSTABLE            48
+  RANDOM_WALK_PASSIVE        2
+
+--------------------------------------------------------------------------------
+RANDOM_WALK_PASSIVE
+--------------------------------------------------------------------------------
+SNACKPACK_RASPBERRY              conf=0.62 anchor=10074.50 range%=9.574 slope100=0.001 r2=0.001 ac1=-0.017 spread=16.84 => PassiveRandomWalkMM only when spread >= 2 ticks
+SNACKPACK_VANILLA                conf=0.62 anchor=10093.50 range%=8.793 slope100=0.009 r2=0.190 ac1=-0.027 spread=16.87 => PassiveRandomWalkMM only when spread >= 2 ticks
+
+--------------------------------------------------------------------------------
+JUMPY_UNSTABLE
+--------------------------------------------------------------------------------
+ROBOT_DISHES                     conf=0.67 anchor=9974.75 range%=25.514 slope100=0.056 r2=0.765 ac1=-0.232 spread=7.35 => avoid_naive_mm; trade_only_with_specific_signal
+MICROCHIP_OVAL                   conf=0.57 anchor=8622.00 range%=58.664 slope100=-0.171 r2=0.912 ac1=-0.007 spread=7.45 => avoid_naive_mm; trade_only_with_specific_signal
+MICROCHIP_SQUARE                 conf=0.57 anchor=14291.00 range%=47.177 slope100=0.177 r2=0.702 ac1=-0.024 spread=11.72 => avoid_naive_mm; trade_only_with_specific_signal
+PANEL_1X4                        conf=0.57 anchor=9438.00 range%=35.251 slope100=-0.070 r2=0.531 ac1=-0.002 spread=8.38 => avoid_naive_mm; trade_only_with_specific_signal
+MICROCHIP_TRIANGLE               conf=0.57 anchor=10038.50 range%=31.110 slope100=-0.077 r2=0.643 ac1=-0.007 spread=8.64 => avoid_naive_mm; trade_only_with_specific_signal
+SLEEP_POD_COTTON                 conf=0.57 anchor=11365.00 range%=32.477 slope100=0.082 r2=0.645 ac1=-0.003 spread=10.05 => avoid_naive_mm; trade_only_with_specific_signal
+SLEEP_POD_POLYESTER              conf=0.57 anchor=11895.50 range%=31.529 slope100=0.101 r2=0.802 ac1=-0.002 spread=10.30 => avoid_naive_mm; trade_only_with_specific_signal
+GALAXY_SOUNDS_BLACK_HOLES        conf=0.57 anchor=11273.50 range%=40.169 slope100=0.098 r2=0.785 ac1=-0.017 spread=14.51 => avoid_naive_mm; trade_only_with_specific_signal
+PANEL_2X2                        conf=0.57 anchor=9723.50 range%=26.014 slope100=-0.047 r2=0.360 ac1=-0.011 spread=8.52 => avoid_naive_mm; trade_only_with_specific_signal
+TRANSLATOR_ASTRO_BLACK           conf=0.57 anchor=9337.00 range%=22.571 slope100=-0.039 r2=0.477 ac1=-0.006 spread=8.37 => avoid_naive_mm; trade_only_with_specific_signal
+ROBOT_MOPPING                    conf=0.57 anchor=11110.75 range%=25.169 slope100=0.064 r2=0.523 ac1=-0.011 spread=7.97 => avoid_naive_mm; trade_only_with_specific_signal
+TRANSLATOR_VOID_BLUE             conf=0.57 anchor=10976.25 range%=21.988 slope100=0.052 r2=0.597 ac1=-0.008 spread=9.52 => avoid_naive_mm; trade_only_with_specific_signal
+MICROCHIP_CIRCLE                 conf=0.57 anchor=9142.50 range%=26.557 slope100=0.022 r2=0.124 ac1=-0.005 spread=8.26 => avoid_naive_mm; trade_only_with_specific_signal
+MICROCHIP_RECTANGLE              conf=0.57 anchor=8604.00 range%=36.204 slope100=-0.066 r2=0.571 ac1=-0.003 spread=7.89 => avoid_naive_mm; trade_only_with_specific_signal
+OXYGEN_SHAKE_CHOCOLATE           conf=0.57 anchor=9390.00 range%=25.985 slope100=0.039 r2=0.354 ac1=-0.089 spread=12.19 => avoid_naive_mm; trade_only_with_specific_signal
+SLEEP_POD_SUEDE                  conf=0.57 anchor=11798.50 range%=26.614 slope100=0.086 r2=0.677 ac1=-0.006 spread=9.95 => avoid_naive_mm; trade_only_with_specific_signal
+SLEEP_POD_NYLON                  conf=0.57 anchor=9569.25 range%=25.885 slope100=0.034 r2=0.332 ac1=0.000 spread=8.56 => avoid_naive_mm; trade_only_with_specific_signal
+ROBOT_VACUUMING                  conf=0.56 anchor=8982.50 range%=22.939 slope100=-0.054 r2=0.764 ac1=-0.008 spread=6.75 => avoid_naive_mm; trade_only_with_specific_signal
+OXYGEN_SHAKE_EVENING_BREATH      conf=0.56 anchor=9280.00 range%=21.794 slope100=0.004 r2=0.009 ac1=-0.123 spread=11.86 => avoid_naive_mm; trade_only_with_specific_signal
+PANEL_2X4                        conf=0.56 anchor=11268.00 range%=23.789 slope100=0.064 r2=0.782 ac1=0.000 spread=9.84 => avoid_naive_mm; trade_only_with_specific_signal
+PANEL_4X4                        conf=0.56 anchor=9826.50 range%=22.561 slope100=-0.004 r2=0.006 ac1=-0.006 spread=8.75 => avoid_naive_mm; trade_only_with_specific_signal
+TRANSLATOR_SPACE_GRAY            conf=0.56 anchor=9498.00 range%=22.757 slope100=-0.037 r2=0.398 ac1=0.008 spread=8.40 => avoid_naive_mm; trade_only_with_specific_signal
+SLEEP_POD_LAMB_WOOL              conf=0.56 anchor=10648.00 range%=20.872 slope100=0.007 r2=0.021 ac1=0.004 spread=9.40 => avoid_naive_mm; trade_only_with_specific_signal
+UV_VISOR_AMBER                   conf=0.56 anchor=7689.00 range%=46.131 slope100=-0.110 r2=0.912 ac1=-0.004 spread=10.32 => avoid_naive_mm; trade_only_with_specific_signal
+TRANSLATOR_ECLIPSE_CHARCOAL      conf=0.56 anchor=9803.00 range%=17.622 slope100=0.004 r2=0.012 ac1=-0.007 spread=8.70 => avoid_naive_mm; trade_only_with_specific_signal
