@@ -581,6 +581,35 @@ class ClassifierStrategy(StatefulStrategy):
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-9 else 0.0
         return intercept, slope, r2
 
+    def _slope_tstat(self, xs: list[int], ys: list[float]) -> tuple[float, float, float, float, float]:
+        """Return intercept, slope, r2, t_stat (slope / SE), and SE(slope)."""
+        n = len(xs)
+        if n < 5 or n != len(ys):
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+
+        x0 = xs[0]
+        rel_x = [x - x0 for x in xs]
+        mx = statistics.mean(rel_x)
+        my = statistics.mean(ys)
+        sxx = sum((x - mx) ** 2 for x in rel_x)
+        if sxx <= 0:
+            return ys[-1], 0.0, 0.0, 0.0, 0.0
+
+        sxy = sum((rel_x[i] - mx) * (ys[i] - my) for i in range(n))
+        slope = sxy / sxx
+        intercept = my - slope * mx
+
+        ss_res = sum((ys[i] - (intercept + slope * rel_x[i])) ** 2 for i in range(n))
+        ss_tot = sum((y - my) ** 2 for y in ys)
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-9 else 0.0
+
+        denom = max(1, n - 2)
+        sigma2 = ss_res / denom if denom > 0 else ss_res
+        se_slope = math.sqrt(max(1e-12, sigma2 / sxx))
+        t_stat = slope / se_slope if se_slope > 0 else 0.0
+
+        return intercept, slope, r2, t_stat, se_slope
+
     def _anchor_signal(self) -> tuple[bool, float | None, float]:
         if len(self.prices) < self.CLASSIFY_WINDOW:
             return False, None, 0.0
@@ -617,33 +646,39 @@ class ClassifierStrategy(StatefulStrategy):
 
         return is_anchor, anchor if is_anchor else None, confidence
 
-    def _drift_signal(self) -> tuple[bool, float | None, float | None, float]:
+    def _drift_signal(self) -> tuple[bool, float | None, float | None, float, float]:
+        """Return (is_drift, intercept, slope, t_stat, confidence).
+        Improved: use slope t-stat (slope / SE) as a drift significance metric.
+        """
         if len(self.prices) < self.CLASSIFY_WINDOW:
-            return False, None, None, 0.0
+            return False, None, None, 0.0, 0.0
 
         ys = self.prices[-self.CLASSIFY_WINDOW:]
         xs = self.timestamps[-self.CLASSIFY_WINDOW:]
-        intercept, slope, r2 = self._linear_fit(xs, ys)
+        intercept, slope, r2, t_stat, se_slope = self._slope_tstat(xs, ys)
 
         anchor = statistics.median(ys)
         if anchor <= 0:
-            return False, None, None, 0.0
+            return False, None, None, 0.0, 0.0
 
-        # Convert slope threshold to price-per-timestamp. If timestamps jump by 100, this still works.
         total_move = abs(ys[-1] - ys[0])
         noise = statistics.pstdev([ys[i] - ys[i - 1] for i in range(1, len(ys))]) if len(ys) > 2 else 0.0
         range_pct = (max(ys) - min(ys)) / anchor
 
-        # Drift: line explains enough, total move is meaningful, not just a flat anchor.
-        is_drift = r2 > 0.72 and total_move > max(3.0, 2.5 * noise) and range_pct > 0.002
+        # Require some baseline linear explainability and meaningful move, plus t-stat significance.
+        is_drift = r2 > 0.72 and total_move > max(3.0, 2.5 * noise) and range_pct > 0.002 and abs(t_stat) > 2.0
 
         r2_score = self._clamp01((r2 - 0.50) / (0.90 - 0.50))
         move_threshold = max(3.0, 2.5 * noise)
         move_score = self._clamp01(total_move / max(1e-9, move_threshold * 1.8))
         range_score = self._clamp01(range_pct / 0.01)
-        confidence = 0.45 * r2_score + 0.35 * move_score + 0.20 * range_score
 
-        return is_drift, intercept if is_drift else None, slope if is_drift else None, confidence
+        # Map t_stat -> [0,1], t=2..8 -> 0..1
+        t_score = self._clamp01((abs(t_stat) - 2.0) / 6.0)
+
+        confidence = 0.35 * r2_score + 0.30 * move_score + 0.15 * range_score + 0.20 * t_score
+
+        return is_drift, intercept if is_drift else None, slope if is_drift else None, t_stat if is_drift else 0.0, confidence
 
     def _random_walk_signal(self, state: TradingState) -> tuple[bool, float]:
         if len(self.prices) < self.MIN_OBSERVE_TICKS:
@@ -708,7 +743,7 @@ class ClassifierStrategy(StatefulStrategy):
             return
 
         is_anchor, anchor, anchor_conf = self._anchor_signal()
-        is_drift, intercept, slope, drift_conf = self._drift_signal()
+        is_drift, intercept, slope, t_stat, drift_conf = self._drift_signal()
         is_rw, rw_conf = self._random_walk_signal(state)
 
         self.regime_confidence["ANCHOR"] = anchor_conf
@@ -894,7 +929,7 @@ class Trader:
         symbols = [s for s in symbols if s in state.order_depths]
 
         # 🚫 FILTER HERE
-        blacklist = ["SLEEP_POD", "PEBBLES", "GALAXY_SOUNDS"]
+        blacklist = ["SLEEP_POD", "PEBBLES"]
         #blacklist = []
 
         symbols = [
