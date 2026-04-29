@@ -1,6 +1,6 @@
 #FROM v5.1 - doesnt trade the unpredictable products (see blacklisted list)
 
-# PnL : 19 306
+# PnL : 26 881
 
 import json
 import math

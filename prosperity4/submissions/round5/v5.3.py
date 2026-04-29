@@ -1,6 +1,6 @@
 #FROM v5.1 - doesnt trade the unpredictable products (see blacklisted list)
 
-# PnL : 19 306
+# PnL : 5.3.0: 28 353
 
 import json
 import math
@@ -513,10 +513,19 @@ class ClassifierStrategy(StatefulStrategy):
         self.mode = "OBSERVE"
         self.candidate_mode: str | None = None
         self.candidate_count = 0
+        self.candidate_confidence = 0.0
+        self.regime_confidence: dict[str, float] = {
+            "ANCHOR": 0.0,
+            "DRIFT": 0.0,
+            "RANDOM_WALK": 0.0,
+        }
         self.detected_anchor: float | None = None
         self.detected_slope: float | None = None
         self.detected_intercept: float | None = None
         self.child: StatefulStrategy | None = None
+
+    def _clamp01(self, value: float) -> float:
+        return max(0.0, min(1.0, value))
 
     def _record_mid(self, timestamp: int, mid: float) -> None:
         self.timestamps.append(timestamp)
@@ -565,14 +574,14 @@ class ClassifierStrategy(StatefulStrategy):
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-9 else 0.0
         return intercept, slope, r2
 
-    def _anchor_signal(self) -> tuple[bool, float | None]:
+    def _anchor_signal(self) -> tuple[bool, float | None, float]:
         if len(self.prices) < self.CLASSIFY_WINDOW:
-            return False, None
+            return False, None, 0.0
 
         window = self.prices[-self.CLASSIFY_WINDOW:]
         anchor = statistics.median(window)
         if anchor <= 0:
-            return False, None
+            return False, None, 0.0
 
         price_range = max(window) - min(window)
         range_pct = price_range / anchor
@@ -592,11 +601,18 @@ class ClassifierStrategy(StatefulStrategy):
             and crosses >= 4
             and autocorr < 0.05
         )
-        return is_anchor, anchor if is_anchor else None
 
-    def _drift_signal(self) -> tuple[bool, float | None, float | None]:
+        range_score = self._clamp01((0.025 - range_pct) / 0.025)
+        slope_score = self._clamp01((0.00008 - slope_pct) / 0.00008)
+        cross_score = self._clamp01(crosses / 8.0)
+        autocorr_score = self._clamp01((0.05 - autocorr) / 0.10)
+        confidence = 0.3 * range_score + 0.3 * slope_score + 0.2 * cross_score + 0.2 * autocorr_score
+
+        return is_anchor, anchor if is_anchor else None, confidence
+
+    def _drift_signal(self) -> tuple[bool, float | None, float | None, float]:
         if len(self.prices) < self.CLASSIFY_WINDOW:
-            return False, None, None
+            return False, None, None, 0.0
 
         ys = self.prices[-self.CLASSIFY_WINDOW:]
         xs = self.timestamps[-self.CLASSIFY_WINDOW:]
@@ -604,7 +620,7 @@ class ClassifierStrategy(StatefulStrategy):
 
         anchor = statistics.median(ys)
         if anchor <= 0:
-            return False, None, None
+            return False, None, None, 0.0
 
         # Convert slope threshold to price-per-timestamp. If timestamps jump by 100, this still works.
         total_move = abs(ys[-1] - ys[0])
@@ -613,11 +629,18 @@ class ClassifierStrategy(StatefulStrategy):
 
         # Drift: line explains enough, total move is meaningful, not just a flat anchor.
         is_drift = r2 > 0.72 and total_move > max(3.0, 2.5 * noise) and range_pct > 0.002
-        return is_drift, intercept if is_drift else None, slope if is_drift else None
 
-    def _random_walk_signal(self, state: TradingState) -> bool:
+        r2_score = self._clamp01((r2 - 0.50) / (0.90 - 0.50))
+        move_threshold = max(3.0, 2.5 * noise)
+        move_score = self._clamp01(total_move / max(1e-9, move_threshold * 1.8))
+        range_score = self._clamp01(range_pct / 0.01)
+        confidence = 0.45 * r2_score + 0.35 * move_score + 0.20 * range_score
+
+        return is_drift, intercept if is_drift else None, slope if is_drift else None, confidence
+
+    def _random_walk_signal(self, state: TradingState) -> tuple[bool, float]:
         if len(self.prices) < self.MIN_OBSERVE_TICKS:
-            return False
+            return False, 0.0
 
         buy_orders, sell_orders = self._get_sorted_orders(state)
         best_bid = buy_orders[0][0]
@@ -629,14 +652,23 @@ class ClassifierStrategy(StatefulStrategy):
         slope = (window[-1] - window[0]) / max(1, len(window) - 1)
 
         # Only trade random walk if spread is wide enough to harvest.
-        return abs(autocorr) < 0.12 and abs(slope) < 0.25 and spread >= 3
+        is_rw = abs(autocorr) < 0.12 and abs(slope) < 0.25 and spread >= 3
 
-    def _set_candidate(self, mode: str) -> None:
+        autocorr_score = self._clamp01((0.12 - abs(autocorr)) / 0.12)
+        slope_score = self._clamp01((0.25 - abs(slope)) / 0.25)
+        spread_score = self._clamp01((spread - 2.0) / 4.0)
+        confidence = 0.4 * autocorr_score + 0.3 * slope_score + 0.3 * spread_score
+
+        return is_rw, confidence
+
+    def _set_candidate(self, mode: str, confidence: float) -> None:
         if self.candidate_mode == mode:
             self.candidate_count += 1
+            self.candidate_confidence = max(self.candidate_confidence, confidence)
         else:
             self.candidate_mode = mode
             self.candidate_count = 1
+            self.candidate_confidence = confidence
 
     def _build_child(self, mode: str, state: TradingState) -> None:
         if mode == "ANCHOR" and self.detected_anchor is not None:
@@ -668,20 +700,30 @@ class ClassifierStrategy(StatefulStrategy):
             self.mode = "OBSERVE"
             return
 
-        is_anchor, anchor = self._anchor_signal()
+        is_anchor, anchor, anchor_conf = self._anchor_signal()
+        is_drift, intercept, slope, drift_conf = self._drift_signal()
+        is_rw, rw_conf = self._random_walk_signal(state)
+
+        self.regime_confidence["ANCHOR"] = anchor_conf
+        self.regime_confidence["DRIFT"] = drift_conf
+        self.regime_confidence["RANDOM_WALK"] = rw_conf
+
+        passed: list[tuple[str, float]] = []
         if is_anchor and anchor is not None:
             self.detected_anchor = anchor
-            self._set_candidate("ANCHOR")
+            passed.append(("ANCHOR", anchor_conf))
+        if is_drift and intercept is not None and slope is not None:
+            self.detected_intercept = intercept
+            self.detected_slope = slope
+            passed.append(("DRIFT", drift_conf))
+        if is_rw:
+            passed.append(("RANDOM_WALK", rw_conf))
+
+        if passed:
+            mode, confidence = max(passed, key=lambda x: x[1])
+            self._set_candidate(mode, confidence)
         else:
-            is_drift, intercept, slope = self._drift_signal()
-            if is_drift and intercept is not None and slope is not None:
-                self.detected_intercept = intercept
-                self.detected_slope = slope
-                self._set_candidate("DRIFT")
-            elif self._random_walk_signal(state):
-                self._set_candidate("RANDOM_WALK")
-            else:
-                self._set_candidate("DISABLED")
+            self._set_candidate("DISABLED", 0.0)
 
         if self.candidate_count >= self.CONFIRM_TICKS and self.candidate_mode is not None:
             self.mode = self.candidate_mode
@@ -723,6 +765,8 @@ class ClassifierStrategy(StatefulStrategy):
             "mode": self.mode,
             "candidate_mode": self.candidate_mode,
             "candidate_count": self.candidate_count,
+            "candidate_confidence": round(self.candidate_confidence, 6),
+            "regime_confidence": {k: round(v, 6) for k, v in self.regime_confidence.items()},
             "detected_anchor": self.detected_anchor,
             "detected_intercept": self.detected_intercept,
             "detected_slope": self.detected_slope,
@@ -752,6 +796,17 @@ class ClassifierStrategy(StatefulStrategy):
         candidate_count = data.get("candidate_count")
         if isinstance(candidate_count, int):
             self.candidate_count = candidate_count
+
+        candidate_confidence = data.get("candidate_confidence")
+        if isinstance(candidate_confidence, (int, float)):
+            self.candidate_confidence = float(candidate_confidence)
+
+        regime_confidence = data.get("regime_confidence")
+        if isinstance(regime_confidence, dict):
+            for regime in ("ANCHOR", "DRIFT", "RANDOM_WALK"):
+                value = regime_confidence.get(regime)
+                if isinstance(value, (int, float)):
+                    self.regime_confidence[regime] = float(value)
 
         detected_anchor = data.get("detected_anchor")
         if isinstance(detected_anchor, (int, float)):
@@ -820,7 +875,8 @@ class Trader:
         symbols = [s for s in symbols if s in state.order_depths]
 
         # 🚫 FILTER HERE
-        blacklist = ["SLEEP_POD", "PEBBLES", "GALAXY_SOUNDS"]
+        #blacklist = ["SLEEP_POD", "PEBBLES", "GALAXY_SOUNDS"]
+        blacklist = []
 
         symbols = [
             s for s in symbols
