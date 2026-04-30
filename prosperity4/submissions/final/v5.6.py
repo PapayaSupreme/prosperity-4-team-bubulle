@@ -1,11 +1,11 @@
-#FROM v5.1 - doesnt trade the unpredictable products (see blacklisted list)
+#FROM v5.4 - position-aware dynamic sizing + aggressive RandomWalk MM
 
-# PnL :
-# 5.3.0 (confidence): 28 353
-# 5.3.1 (blacklist removed): bad, very bad (20K)
-# 5.3.2 (confidence for regime change): 36 444
-# 5.3.3 (anchor update): less good
-# 5.3.4 (drift update):
+# PnL : TBD (expecting ~41-43K from sizing efficiency improvements)
+# Changes in v5.6:
+#   - AnchoredMarketMaker: added _dynamic_size() to scale taker/maker sizes by remaining capacity
+#   - DriftMarketMaker: added _dynamic_size() same logic
+#   - PassiveRandomWalkMM: increased base size from 1 to 3, added _dynamic_size(), more aggressive
+#   - All strategies now scale down orders when approaching position limits
 
 import json
 import math
@@ -258,6 +258,14 @@ class AnchoredMarketMaker(StatefulStrategy):
         residual = mid - adaptive_anchor
         return mid - self.residual_alpha * residual
 
+    def _dynamic_size(self, position: int, capacity: int, base_size: int) -> int:
+        """Scale size based on remaining capacity. Closer to limit -> smaller."""
+        if capacity <= 0:
+            return 0
+        # If capacity > 2*base_size, use full base_size. Otherwise scale down.
+        ratio = capacity / max(1, 2 * base_size)
+        return max(1, int(base_size * min(1.0, ratio)))
+
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
         best_bid, best_bid_volume = buy_orders[0]
@@ -278,10 +286,12 @@ class AnchoredMarketMaker(StatefulStrategy):
 
         reservation = fair - self.inventory_skew * position + 1.2 * imbalance
 
+        # Aggressive taking with dynamic sizing.
         for ask_price, ask_volume in sell_orders:
             if buy_left <= 0 or ask_price > reservation - self.take_edge:
                 break
-            size = min(buy_left, -ask_volume, 20)
+            size = self._dynamic_size(position, buy_left, 20)
+            size = min(buy_left, -ask_volume, size)
             self.buy(ask_price, size)
             buy_left -= size
             position += size
@@ -289,7 +299,8 @@ class AnchoredMarketMaker(StatefulStrategy):
         for bid_price, bid_volume in buy_orders:
             if sell_left <= 0 or bid_price < reservation + self.take_edge:
                 break
-            size = min(sell_left, bid_volume, 20)
+            size = self._dynamic_size(position, sell_left, 20)
+            size = min(sell_left, bid_volume, size)
             self.sell(bid_price, size)
             sell_left -= size
             position -= size
@@ -337,14 +348,21 @@ class AnchoredMarketMaker(StatefulStrategy):
 
 class PassiveRandomWalkMM(StatefulStrategy):
     """
-    Very conservative random-walk market maker.
-    Assumption: no directional edge, so only try to capture spread when spread is wide enough.
+    Aggressive random-walk market maker (v5.6 upgrade).
+    Larger sizes and higher willingness to trade vs v5.4.
     """
 
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
         self.ema_mid: float | None = None
         self.alpha = 0.08
+
+    def _dynamic_size(self, position: int, capacity: int, base_size: int) -> int:
+        """Scale size based on remaining capacity. Closer to limit -> smaller."""
+        if capacity <= 0:
+            return 0
+        ratio = capacity / max(1, 2 * base_size)
+        return max(1, int(base_size * min(1.0, ratio)))
 
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
@@ -375,9 +393,11 @@ class PassiveRandomWalkMM(StatefulStrategy):
         bid_quote = min(best_bid + 1, int(math.floor(reservation - 1)), best_ask - 1)
         ask_quote = max(best_ask - 1, int(math.ceil(reservation + 1)), best_bid + 1)
 
-        size = 1
+        # Aggressive: base size 3 (vs 1 in v5.4), scale down by capacity.
+        size = self._dynamic_size(position, buy_left, 3)
         if buy_left > 0:
             self.buy(bid_quote, min(size, buy_left))
+        size = self._dynamic_size(position, sell_left, 3)
         if sell_left > 0:
             self.sell(ask_quote, min(size, sell_left))
 
@@ -396,6 +416,7 @@ class DriftMarketMaker(StatefulStrategy):
     """
     Intarian-style market maker around a fitted line: fair = intercept + slope * t.
     It is not pure momentum chasing; it quotes around the expected linear fair value.
+    v5.6: added dynamic sizing
     """
 
     def __init__(
@@ -421,6 +442,13 @@ class DriftMarketMaker(StatefulStrategy):
         t = max(0, state.timestamp - self.start_tick)
         return self.intercept + self.slope * t
 
+    def _dynamic_size(self, position: int, capacity: int, base_size: int) -> int:
+        """Scale size based on remaining capacity. Closer to limit -> smaller."""
+        if capacity <= 0:
+            return 0
+        ratio = capacity / max(1, 2 * base_size)
+        return max(1, int(base_size * min(1.0, ratio)))
+
     def act(self, state: TradingState) -> None:
         buy_orders, sell_orders = self._get_sorted_orders(state)
         best_bid, best_bid_volume = buy_orders[0]
@@ -437,11 +465,12 @@ class DriftMarketMaker(StatefulStrategy):
         imbalance = (best_bid_volume - best_ask_volume) / total_top_depth if total_top_depth > 0 else 0.0
         reservation = fair - self.inventory_skew * position + 0.6 * imbalance
 
-        # Take only clearly mispriced orders.
+        # Take only clearly mispriced orders, with dynamic sizing.
         for ask_price, ask_volume in sell_orders:
             if buy_left <= 0 or ask_price > reservation - self.take_edge:
                 break
-            size = min(buy_left, -ask_volume, 2)
+            size = self._dynamic_size(position, buy_left, 2)
+            size = min(buy_left, -ask_volume, size)
             self.buy(ask_price, size)
             buy_left -= size
             position += size
@@ -449,7 +478,8 @@ class DriftMarketMaker(StatefulStrategy):
         for bid_price, bid_volume in buy_orders:
             if sell_left <= 0 or bid_price < reservation + self.take_edge:
                 break
-            size = min(sell_left, bid_volume, 2)
+            size = self._dynamic_size(position, sell_left, 2)
+            size = min(sell_left, bid_volume, size)
             self.sell(bid_price, size)
             sell_left -= size
             position -= size
@@ -929,8 +959,10 @@ class Trader:
         symbols = [s for s in symbols if s in state.order_depths]
 
         # 🚫 FILTER HERE
-        blacklist = ["SLEEP_POD", "PEBBLES"]
-        #blacklist = []
+        blacklist = ["GALAXY_SOUNDS_PLANETARY_RINGS", "OXYGEN_SHAKE_MINT", "PANEL_1X4",
+                     "SNACKPACK_VANILLA", "SNACKPACK_RASPBERRY", "TRANSLATOR_SPACE_GRAY",
+                     "PEBBLES_L", "PEBBLES_M", "PEBBLES_L", "PEBBLES_XL",
+                     "SLEEP_POD_COTTON", "SLEEP_POD_POLYESTER"]
 
         symbols = [
             s for s in symbols
@@ -969,3 +1001,4 @@ class Trader:
 
     def trade(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         return self.run(state)
+
