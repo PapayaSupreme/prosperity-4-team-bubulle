@@ -186,10 +186,7 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks
 
-# prosperity3bt and prosperity3submit output directories
-/backtests/
-/submissions/
-
 # Submission and end-of-round logs
 !/logs/*.log
 .idea
+/src/analysis/round*
