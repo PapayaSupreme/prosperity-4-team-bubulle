@@ -34,10 +34,10 @@ In this port, both `empty.py` and `hybrid.py` implement:
 - 
 ## Snapshot workflow for round X, version Y, change Z
 
-When you backtest, copy the exact uploaded code into:
+Every time you backtest, copy the exact uploaded code into:
 
 - `/src/submissions/roundX/vX.YZ.py`
-- 
+
 Once you submit, copy the exact uploaded code into:
 - `/src/submissions/final/vX.Y.py`
 
