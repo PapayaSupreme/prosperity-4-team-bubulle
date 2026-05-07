@@ -13,7 +13,7 @@ try:
     from src.analysis.data import read_all_round4_prices
 except ModuleNotFoundError:
     # Allow running this file directly from the repository root.
-    from data import read_all_round4_prices
+    from src.analysis.data import read_all_round4_prices
 
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "round4_outputs"
