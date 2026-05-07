@@ -1,6 +1,12 @@
-# Prosperity 4 Structure (Ported Template)
+# Prosperity 4 Bubulle's team codebase
 
-This folder mirrors the previous year's proven layout and is ready for the Prosperity 4 tutorial data workflow.
+## INTRODUCTION
+
+Contains my solo team attempt at Prosperity 4.
+Pablo Ferreira, @2026
+[LinkedIn](https://www.linkedin.com/in/pablo-frr)
+[GitHub](https://www.github.com/PapayaSupreme)
+
 
 ## Folder layout
 
