@@ -2,6 +2,7 @@
 
 ## INTRODUCTION
 
+TOP 702 / 18 000
 Contains my solo team attempt at Prosperity 4.
 Pablo Ferreira, @2026
 [LinkedIn](https://www.linkedin.com/in/pablo-frr)
